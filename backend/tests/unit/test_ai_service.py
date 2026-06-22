@@ -1,376 +1,357 @@
 """
-AI服务测试
+AI服务测试 - 测试 AIManager、各 Provider 与便捷函数
 """
 import pytest
+from unittest.mock import MagicMock, patch
+
 from app.services.ai_service import (
-    AIService,
-    AIProvider,
-    AIModel,
-    get_ai_service,
+    ChatMessage,
+    ChatResponse,
+    ModelInfo,
+    BaseAIProvider,
+    OpenAIProvider,
+    AnthropicProvider,
+    GoogleGeminiProvider,
+    OllamaProvider,
+    AIManager,
+    ai_manager,
+    ai_chat,
 )
-from app.services.ai_orchestrator import AIOrchestrator, get_ai_orchestrator
 
 
-class TestAIProvider:
-    """AI提供商枚举测试"""
+class TestChatMessage:
+    """ChatMessage 数据类测试"""
 
-    def test_provider_values(self):
-        """测试提供商值"""
-        assert hasattr(AIProvider, 'OPENAI')
-        assert hasattr(AIProvider, 'ANTHROPIC')
-        assert hasattr(AIProvider, 'GOOGLE')
-        assert hasattr(AIProvider, 'OLLAMA')
+    def test_create_with_required_fields(self):
+        msg = ChatMessage(role="user", content="Hello")
+        assert msg.role == "user"
+        assert msg.content == "Hello"
+        assert msg.name is None
 
-    def test_provider_count(self):
-        """测试提供商数量"""
-        assert len(AIProvider) >= 4
+    def test_create_with_name(self):
+        msg = ChatMessage(role="assistant", content="Hi", name="bot")
+        assert msg.name == "bot"
 
-
-class TestAIModel:
-    """AI模型枚举测试"""
-
-    def test_model_values(self):
-        """测试模型值"""
-        assert hasattr(AIModel, 'GPT_4')
-        assert hasattr(AIModel, 'GPT_3_5_TURBO')
-        assert hasattr(AIModel, 'CLAUDE_3_OPUS')
-        assert hasattr(AIModel, 'GEMINI_PRO')
-
-    def test_model_count(self):
-        """测试模型数量"""
-        assert len(AIModel) >= 4
+    def test_system_role(self):
+        msg = ChatMessage(role="system", content="You are helpful")
+        assert msg.role == "system"
 
 
-class TestAIService:
-    """AI服务测试"""
+class TestChatResponse:
+    """ChatResponse 数据类测试"""
 
-    def test_service_creation(self):
-        """测试服务创建"""
-        service = AIService()
-        assert service is not None
+    def test_create_minimal(self):
+        resp = ChatResponse(content="answer", model="gpt-4o", provider="openai")
+        assert resp.content == "answer"
+        assert resp.usage == {}
+        assert resp.finish_reason is None
+        assert resp.raw_response is None
 
-    def test_generate_text(self):
-        """测试生成文本"""
-        service = AIService()
-        try:
-            result = service.generate_text("Hello, how are you?")
-            assert isinstance(result, str)
-            assert len(result) > 0
-        except Exception:
-            # API Key未配置是正常的
-            pass
+    def test_create_with_usage(self):
+        resp = ChatResponse(
+            content="answer",
+            model="gpt-4o",
+            provider="openai",
+            usage={"total_tokens": 100},
+            finish_reason="stop",
+        )
+        assert resp.usage["total_tokens"] == 100
+        assert resp.finish_reason == "stop"
 
-    def test_generate_text_with_system_prompt(self):
-        """测试带系统提示的文本生成"""
-        service = AIService()
-        try:
-            result = service.generate_text(
-                "Hello",
-                system_prompt="You are a helpful assistant."
-            )
-            assert isinstance(result, str)
-        except Exception:
-            pass
 
-    def test_generate_json(self):
-        """测试生成JSON"""
-        service = AIService()
-        try:
-            result = service.generate_json(
-                "Return a JSON object with name and age",
-                schema={"name": "string", "age": "number"}
-            )
-            assert isinstance(result, dict)
-            assert "name" in result
-        except Exception:
-            pass
+class TestModelInfo:
+    """ModelInfo 数据类测试"""
 
-    def test_summarize(self):
-        """测试摘要"""
-        service = AIService()
-        try:
-            text = "This is a long text about artificial intelligence and machine learning. " * 10
-            summary = service.summarize(text, max_length=50)
-            assert isinstance(summary, str)
-            assert len(summary) < len(text)
-        except Exception:
-            pass
+    def test_defaults(self):
+        info = ModelInfo(name="gpt-4o", provider="openai")
+        assert info.max_tokens == 4096
+        assert info.supports_streaming is True
+        assert info.supports_vision is False
+        assert info.cost_per_1k_input == 0.0
 
-    def test_translate(self):
-        """测试翻译"""
-        service = AIService()
-        try:
-            result = service.translate("Hello World", "en", "zh")
-            assert isinstance(result, str)
-            assert len(result) > 0
-        except Exception:
-            pass
+    def test_custom_values(self):
+        info = ModelInfo(
+            name="claude",
+            provider="anthropic",
+            max_tokens=200000,
+            supports_vision=True,
+            cost_per_1k_input=0.003,
+        )
+        assert info.max_tokens == 200000
+        assert info.supports_vision is True
+        assert info.cost_per_1k_input == 0.003
 
-    def test_classify(self):
-        """测试分类"""
-        service = AIService()
-        try:
-            result = service.classify(
-                "This is a great product!",
-                categories=["positive", "negative", "neutral"]
-            )
-            assert isinstance(result, str)
-            assert result in ["positive", "negative", "neutral"]
-        except Exception:
-            pass
 
-    def test_extract_keywords(self):
-        """测试提取关键词"""
-        service = AIService()
-        try:
-            keywords = service.extract_keywords(
-                "Artificial intelligence and machine learning are transforming technology."
-            )
-            assert isinstance(keywords, list)
-            assert len(keywords) > 0
-        except Exception:
-            pass
+class TestOpenAIProvider:
+    """OpenAI Provider 测试"""
 
-    def test_analyze_sentiment(self):
-        """测试情感分析"""
-        service = AIService()
-        try:
-            result = service.analyze_sentiment("I love this product!")
-            assert isinstance(result, dict)
-            assert "sentiment" in result
-            assert "score" in result
-        except Exception:
-            pass
+    def test_is_available_without_key(self):
+        provider = OpenAIProvider(api_key=None)
+        # api_key 来自 settings，可能为空字符串
+        assert provider.is_available() == bool(provider.api_key)
 
-    def test_generate_product_description(self):
-        """测试生成产品描述"""
-        service = AIService()
-        try:
-            description = service.generate_product_description(
-                product_name="Wireless Headphones",
-                features=["Bluetooth 5.0", "Noise Cancelling", "30h Battery"]
-            )
-            assert isinstance(description, str)
-            assert len(description) > 0
-        except Exception:
-            pass
-
-    def test_generate_seo_title(self):
-        """测试生成SEO标题"""
-        service = AIService()
-        try:
-            title = service.generate_seo_title(
-                content="This is a product page about wireless headphones",
-                keywords=["headphones", "wireless", "bluetooth"]
-            )
-            assert isinstance(title, str)
-            assert len(title) <= 60  # SEO建议长度
-        except Exception:
-            pass
-
-    def test_generate_meta_description(self):
-        """测试生成Meta描述"""
-        service = AIService()
-        try:
-            description = service.generate_meta_description(
-                content="Product page content here",
-                keywords=["headphones", "wireless"]
-            )
-            assert isinstance(description, str)
-            assert len(description) <= 160  # SEO建议长度
-        except Exception:
-            pass
-
-    def test_rewrite_content(self):
-        """测试内容改写"""
-        service = AIService()
-        try:
-            original = "This is the original content that needs to be rewritten."
-            rewritten = service.rewrite_content(original, style="professional")
-            assert isinstance(rewritten, str)
-            assert len(rewritten) > 0
-            assert rewritten != original
-        except Exception:
-            pass
+    def test_is_available_with_key(self):
+        provider = OpenAIProvider(api_key="sk-test")
+        assert provider.is_available() is True
 
     def test_get_available_models(self):
-        """测试获取可用模型"""
-        service = AIService()
-        models = service.get_available_models()
-        assert isinstance(models, list)
+        provider = OpenAIProvider(api_key="sk-test")
+        models = provider.get_available_models()
+        assert len(models) > 0
+        assert all(isinstance(m, ModelInfo) for m in models)
+        assert all(m.provider == "openai" for m in models)
+
+    def test_chat_completion_with_mock(self):
+        provider = OpenAIProvider(api_key="sk-test")
+        mock_client = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Hello back"
+        mock_choice.finish_reason = "stop"
+        mock_resp = MagicMock()
+        mock_resp.choices = [mock_choice]
+        mock_resp.usage.prompt_tokens = 5
+        mock_resp.usage.completion_tokens = 3
+        mock_resp.usage.total_tokens = 8
+        mock_client.chat.completions.create.return_value = mock_resp
+        provider._client = mock_client
+
+        messages = [ChatMessage(role="user", content="Hi")]
+        resp = provider.chat_completion(messages, model="gpt-4o")
+        assert isinstance(resp, ChatResponse)
+        assert resp.content == "Hello back"
+        assert resp.provider == "openai"
+        assert resp.usage["total_tokens"] == 8
+
+    def test_chat_completion_stream_with_mock(self):
+        provider = OpenAIProvider(api_key="sk-test")
+        mock_client = MagicMock()
+
+        def make_chunk(text):
+            chunk = MagicMock()
+            chunk.choices = [MagicMock()]
+            chunk.choices[0].delta.content = text
+            return chunk
+
+        mock_client.chat.completions.create.return_value = iter(
+            [make_chunk("Hello "), make_chunk("world")]
+        )
+        provider._client = mock_client
+
+        messages = [ChatMessage(role="user", content="Hi")]
+        chunks = list(provider.chat_completion_stream(messages, model="gpt-4o"))
+        assert "".join(chunks) == "Hello world"
+
+
+class TestAnthropicProvider:
+    """Anthropic Provider 测试"""
+
+    def test_is_available_with_key(self):
+        provider = AnthropicProvider(api_key="sk-ant-test")
+        assert provider.is_available() is True
+
+    def test_get_available_models(self):
+        provider = AnthropicProvider(api_key="sk-ant-test")
+        models = provider.get_available_models()
+        assert len(models) > 0
+        assert all(m.provider == "anthropic" for m in models)
+
+    def test_chat_completion_with_mock(self):
+        provider = AnthropicProvider(api_key="sk-ant-test")
+        mock_client = MagicMock()
+        mock_block = MagicMock()
+        mock_block.text = "Claude reply"
+        mock_resp = MagicMock()
+        mock_resp.content = [mock_block]
+        mock_resp.stop_reason = "end_turn"
+        mock_resp.usage.input_tokens = 10
+        mock_resp.usage.output_tokens = 5
+        mock_client.messages.create.return_value = mock_resp
+        provider._client = mock_client
+
+        messages = [
+            ChatMessage(role="system", content="Be nice"),
+            ChatMessage(role="user", content="Hi"),
+        ]
+        resp = provider.chat_completion(messages, model="claude-3")
+        assert resp.content == "Claude reply"
+        assert resp.provider == "anthropic"
+        assert resp.usage["total_tokens"] == 15
+
+
+class TestGoogleGeminiProvider:
+    """Google Gemini Provider 测试"""
+
+    def test_is_available_with_key(self):
+        provider = GoogleGeminiProvider(api_key="gemini-key")
+        assert provider.is_available() is True
+
+    def test_get_available_models(self):
+        provider = GoogleGeminiProvider(api_key="gemini-key")
+        models = provider.get_available_models()
+        assert len(models) > 0
+        assert any(m.supports_vision for m in models)
+
+
+class TestOllamaProvider:
+    """Ollama Provider 测试"""
+
+    def test_get_available_models_returns_defaults_on_error(self):
+        provider = OllamaProvider(base_url="http://localhost:11434")
+        # _get_client 会尝试创建 httpx 客户端，但 get_available_models 出错时返回默认
+        models = provider.get_available_models()
+        assert len(models) > 0
+        assert all(m.provider == "ollama" for m in models)
+
+    def test_is_available_returns_bool(self):
+        provider = OllamaProvider(base_url="http://localhost:99999")
+        # 连不上时返回 False
+        assert isinstance(provider.is_available(), bool)
+
+
+class TestAIManager:
+    """AIManager 测试"""
+
+    def test_singleton_instance(self):
+        from app.services.ai_service import ai_manager as m1
+        assert m1 is ai_manager
+
+    def test_init_providers(self):
+        manager = AIManager()
+        assert "openai" in manager.providers
+        assert "anthropic" in manager.providers
+        assert "google" in manager.providers
+        assert "ollama" in manager.providers
+
+    def test_fallback_chain(self):
+        manager = AIManager()
+        assert len(manager.fallback_chain) >= 4
+        assert manager.fallback_chain[0] == "openai"
+
+    def test_get_provider(self):
+        manager = AIManager()
+        provider = manager.get_provider("openai")
+        assert provider is not None
+        assert isinstance(provider, OpenAIProvider)
+
+    def test_get_provider_unknown(self):
+        manager = AIManager()
+        assert manager.get_provider("unknown") is None
+
+    def test_add_and_get_api_key(self):
+        manager = AIManager()
+        manager.add_api_key("openai", "key-1")
+        manager.add_api_key("openai", "key-2")
+        k1 = manager.get_next_api_key("openai")
+        k2 = manager.get_next_api_key("openai")
+        k3 = manager.get_next_api_key("openai")
+        assert k1 == "key-1"
+        assert k2 == "key-2"
+        # 轮询回到第一个
+        assert k3 == "key-1"
+
+    def test_get_next_api_key_empty(self):
+        manager = AIManager()
+        assert manager.get_next_api_key("nonexistent") is None
+
+    def test_get_available_providers(self):
+        manager = AIManager()
+        # 直接设置 provider 的 api_key 让其可用
+        manager.get_provider("openai").api_key = "sk-test"
+        providers = manager.get_available_providers()
+        assert isinstance(providers, list)
+        assert "openai" in providers
+
+    def test_get_provider_models(self):
+        manager = AIManager()
+        models = manager.get_provider_models("openai")
         assert len(models) > 0
 
-    def test_set_provider(self):
-        """测试设置提供商"""
-        service = AIService()
-        service.set_provider(AIProvider.OPENAI)
-        assert service.current_provider == AIProvider.OPENAI
+    def test_get_provider_models_unknown(self):
+        manager = AIManager()
+        assert manager.get_provider_models("unknown") == []
 
-    def test_set_model(self):
-        """测试设置模型"""
-        service = AIService()
-        service.set_model(AIModel.GPT_3_5_TURBO)
-        assert service.current_model == AIModel.GPT_3_5_TURBO
+    def test_get_all_models(self):
+        manager = AIManager()
+        # 直接设置 provider 的 api_key 让其可用
+        manager.get_provider("openai").api_key = "sk-test"
+        models = manager.get_all_models()
+        assert len(models) > 0
 
-    def test_get_usage_stats(self):
-        """测试获取使用统计"""
-        service = AIService()
-        stats = service.get_usage_stats()
-        assert isinstance(stats, dict)
-        assert "total_tokens" in stats
-        assert "total_requests" in stats
-
-    def test_get_instance(self):
-        """测试单例模式"""
-        s1 = get_ai_service()
-        s2 = get_ai_service()
-        assert s1 is s2
-
-    def test_calculate_cost(self):
-        """测试计算费用"""
-        service = AIService()
-        cost = service.calculate_cost(
-            prompt_tokens=1000,
-            completion_tokens=500,
-            model=AIModel.GPT_3_5_TURBO
+    def test_chat_with_mock_provider(self):
+        manager = AIManager()
+        mock_provider = MagicMock(spec=BaseAIProvider)
+        mock_provider.is_available.return_value = True
+        mock_provider.chat_completion.return_value = ChatResponse(
+            content="mocked", model="gpt-4o", provider="openai"
         )
-        assert isinstance(cost, float)
-        assert cost >= 0
+        manager.providers["openai"] = mock_provider
+        manager.fallback_chain = ["openai"]
 
-    def test_check_api_key(self):
-        """测试检查API Key"""
-        service = AIService()
-        is_valid = service.check_api_key()
-        assert isinstance(is_valid, bool)
+        messages = [ChatMessage(role="user", content="Hi")]
+        resp = manager.chat(messages, provider="openai", auto_fallback=False)
+        assert resp.content == "mocked"
+        mock_provider.chat_completion.assert_called_once()
 
-    def test_stream_generate(self):
-        """测试流式生成"""
-        service = AIService()
-        try:
-            chunks = []
-            for chunk in service.stream_generate("Hello"):
-                chunks.append(chunk)
-                assert isinstance(chunk, str)
-            assert len(chunks) > 0
-        except Exception:
-            pass
+    def test_chat_fallback_when_provider_unavailable(self):
+        manager = AIManager()
+        unavailable = MagicMock(spec=BaseAIProvider)
+        unavailable.is_available.return_value = False
+        available = MagicMock(spec=BaseAIProvider)
+        available.is_available.return_value = True
+        available.chat_completion.return_value = ChatResponse(
+            content="fallback", model="claude", provider="anthropic"
+        )
+        manager.providers["openai"] = unavailable
+        manager.providers["anthropic"] = available
+        manager.fallback_chain = ["openai", "anthropic"]
+
+        messages = [ChatMessage(role="user", content="Hi")]
+        resp = manager.chat(messages, provider="openai", auto_fallback=True)
+        assert resp.content == "fallback"
+        assert resp.provider == "anthropic"
+
+    def test_chat_all_providers_fail(self):
+        manager = AIManager()
+        unavailable = MagicMock(spec=BaseAIProvider)
+        unavailable.is_available.return_value = False
+        manager.providers["openai"] = unavailable
+        manager.fallback_chain = ["openai"]
+
+        messages = [ChatMessage(role="user", content="Hi")]
+        with pytest.raises(Exception, match="All AI providers failed"):
+            manager.chat(messages, provider="openai", auto_fallback=True)
+
+    def test_chat_unknown_provider_raises(self):
+        manager = AIManager()
+        messages = [ChatMessage(role="user", content="Hi")]
+        with pytest.raises(Exception):
+            manager.chat(messages, provider="unknown", auto_fallback=False)
 
 
-class TestAIOrchestrator:
-    """AI编排器测试"""
+class TestAIChatFunction:
+    """ai_chat 便捷函数测试"""
 
-    def test_orchestrator_creation(self):
-        """测试编排器创建"""
-        orchestrator = AIOrchestrator()
-        assert orchestrator is not None
-
-    def test_analyze_website(self):
-        """测试分析网站"""
-        orchestrator = AIOrchestrator()
-        try:
-            result = orchestrator.analyze_website("https://example.com")
-            assert isinstance(result, dict)
-            assert "design" in result
-            assert "content" in result
-            assert "technology" in result
-        except Exception:
-            pass
-
-    def test_generate_theme_config(self):
-        """测试生成主题配置"""
-        orchestrator = AIOrchestrator()
-        try:
-            config = orchestrator.generate_theme_config(
-                industry="ecommerce",
-                style="modern"
+    def test_ai_chat_with_mock(self):
+        with patch.object(ai_manager, "chat") as mock_chat:
+            mock_chat.return_value = ChatResponse(
+                content="hello world", model="gpt-4o", provider="openai"
             )
-            assert isinstance(config, dict)
-            assert "colors" in config
-            assert "typography" in config
-        except Exception:
-            pass
+            result = ai_chat("Hi")
+            assert result == "hello world"
+            mock_chat.assert_called_once()
+            args, kwargs = mock_chat.call_args
+            assert kwargs["messages"][0].role == "user"
+            assert kwargs["messages"][0].content == "Hi"
 
-    def test_generate_page_layout(self):
-        """测试生成页面布局"""
-        orchestrator = AIOrchestrator()
-        try:
-            layout = orchestrator.generate_page_layout(
-                page_type="landing",
-                industry="ecommerce"
+    def test_ai_chat_with_system_prompt(self):
+        with patch.object(ai_manager, "chat") as mock_chat:
+            mock_chat.return_value = ChatResponse(
+                content="ok", model="gpt-4o", provider="openai"
             )
-            assert isinstance(layout, dict)
-            assert "sections" in layout
-        except Exception:
-            pass
-
-    def test_optimize_content_seo(self):
-        """测试SEO内容优化"""
-        orchestrator = AIOrchestrator()
-        try:
-            optimized = orchestrator.optimize_content_seo(
-                content="This is a test product.",
-                keywords=["test", "product"]
-            )
-            assert isinstance(optimized, dict)
-            assert "content" in optimized
-            assert "seo_score" in optimized
-        except Exception:
-            pass
-
-    def test_generate_product_content(self):
-        """测试生成产品内容"""
-        orchestrator = AIOrchestrator()
-        try:
-            content = orchestrator.generate_product_content(
-                product_name="Test Product",
-                features=["Feature 1", "Feature 2"],
-                target_audience="everyone"
-            )
-            assert isinstance(content, dict)
-            assert "title" in content
-            assert "description" in content
-            assert "short_description" in content
-        except Exception:
-            pass
-
-    def test_generate_reviews(self):
-        """测试生成评论"""
-        orchestrator = AIOrchestrator()
-        try:
-            reviews = orchestrator.generate_reviews(
-                product_name="Test Product",
-                count=5
-            )
-            assert isinstance(reviews, list)
-            assert len(reviews) == 5
-            assert all("author" in r for r in reviews)
-            assert all("rating" in r for r in reviews)
-            assert all("content" in r for r in reviews)
-        except Exception:
-            pass
-
-    def test_get_instance(self):
-        """测试单例模式"""
-        o1 = get_ai_orchestrator()
-        o2 = get_ai_orchestrator()
-        assert o1 is o2
-
-    def test_select_best_model(self):
-        """测试选择最佳模型"""
-        orchestrator = AIOrchestrator()
-        model = orchestrator.select_best_model(task="text_generation")
-        assert model is not None
-
-    def test_get_task_capabilities(self):
-        """测试获取任务能力"""
-        orchestrator = AIOrchestrator()
-        capabilities = orchestrator.get_task_capabilities()
-        assert isinstance(capabilities, list)
-        assert len(capabilities) > 0
-
-    def test_estimate_cost(self):
-        """测试估算成本"""
-        orchestrator = AIOrchestrator()
-        cost = orchestrator.estimate_cost(task="text_generation", input_size=1000)
-        assert isinstance(cost, float)
-        assert cost >= 0
+            result = ai_chat("Hi", system_prompt="Be nice")
+            assert result == "ok"
+            args, kwargs = mock_chat.call_args
+            messages = kwargs["messages"]
+            assert messages[0].role == "system"
+            assert messages[0].content == "Be nice"
+            assert messages[1].role == "user"

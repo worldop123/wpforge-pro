@@ -84,7 +84,7 @@ cd wpforge
 ### 3. 添加上游仓库
 
 ```bash
-git remote add upstream https://github.com/wpforge/wpforge.git
+git remote add upstream https://github.com/worldop123/wpforge.git
 ```
 
 ### 4. 创建分支

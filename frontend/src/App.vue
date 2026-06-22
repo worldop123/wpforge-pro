@@ -59,13 +59,35 @@
           </el-breadcrumb>
         </div>
         <div class="header-right">
-          <el-button type="primary" size="small">
+          <el-button type="primary" size="small" @click="goCreateTask">
             <el-icon><Plus /></el-icon>
             新建任务
           </el-button>
-          <el-avatar :size="32" style="margin-left: 16px;">
-            <el-icon><User /></el-icon>
-          </el-avatar>
+          <el-dropdown trigger="click" @command="handleUserCommand">
+            <div class="user-info">
+              <el-avatar :size="32">
+                <el-icon><User /></el-icon>
+              </el-avatar>
+              <span class="username">{{ userStore.username || '用户' }}</span>
+              <el-icon class="arrow"><ArrowDown /></el-icon>
+            </div>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="profile">
+                  <el-icon><UserFilled /></el-icon>
+                  个人信息
+                </el-dropdown-item>
+                <el-dropdown-item command="settings">
+                  <el-icon><Setting /></el-icon>
+                  系统设置
+                </el-dropdown-item>
+                <el-dropdown-item divided command="logout">
+                  <el-icon><SwitchButton /></el-icon>
+                  退出登录
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </div>
       </el-header>
 
@@ -81,10 +103,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { useUserStore } from '@/store/user'
 
 const route = useRoute()
+const router = useRouter()
+const userStore = useUserStore()
 
 const activeMenu = computed(() => route.path)
 
@@ -100,6 +126,35 @@ const currentPageName = computed(() => {
     '/settings': '系统设置'
   }
   return nameMap[route.path] || '页面'
+})
+
+const goCreateTask = () => {
+  router.push('/scraping')
+}
+
+const handleUserCommand = async (command: string) => {
+  if (command === 'logout') {
+    try {
+      await ElMessageBox.confirm('确定要退出登录吗？', '退出登录', {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning'
+      })
+      await userStore.logout()
+      ElMessage.success('已退出登录')
+      router.push('/login')
+    } catch {
+      // 用户取消
+    }
+  } else if (command === 'settings') {
+    router.push('/settings')
+  } else if (command === 'profile') {
+    ElMessage.info('个人信息功能开发中')
+  }
+}
+
+onMounted(() => {
+  userStore.restoreFromStorage()
 })
 </script>
 
@@ -148,6 +203,31 @@ const currentPageName = computed(() => {
 .header-right {
   display: flex;
   align-items: center;
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  margin-left: 16px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+}
+
+.user-info:hover {
+  background-color: #f3f4f6;
+}
+
+.username {
+  margin: 0 8px;
+  font-size: 14px;
+  color: #1f2937;
+}
+
+.user-info .arrow {
+  font-size: 12px;
+  color: #6b7280;
 }
 
 .main-content {

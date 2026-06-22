@@ -9,7 +9,7 @@
 **请通过以下方式报告安全漏洞：**
 
 - **邮箱**: security@wpforge.dev
-- **GitHub**: 提交 [Security Advisory](https://github.com/wpforge/wpforge/security/advisories/new)
+- **GitHub**: 提交 [Security Advisory](https://github.com/worldop123/wpforge/security/advisories/new)
 - **PGP**: 如需加密通信，请联系我们获取公钥
 
 **请在报告中包含以下信息：**
@@ -278,7 +278,7 @@
 
 - **安全问题**: security@wpforge.dev
 - **一般问题**: hello@wpforge.dev
-- **GitHub Issues**: https://github.com/wpforge/wpforge/issues
+- **GitHub Issues**: https://github.com/worldop123/wpforge/issues
 
 ---
 

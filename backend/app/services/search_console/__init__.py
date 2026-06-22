@@ -1,6 +1,6 @@
 """
 搜索引擎自动提交与索引模块
-支持Google Search Console、Bing Webmaster Tools等
+支持Google Search Console、Bing Webmaster Tools、百度站长平台等
 """
 
 from app.services.search_console.search_console_service import (

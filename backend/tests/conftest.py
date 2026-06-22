@@ -28,6 +28,34 @@ def db_engine():
     Base.metadata.drop_all(bind=engine)
 
 
+def _reset_rate_limiter():
+    """重置限流中间件的内存缓存，避免测试间相互影响"""
+    try:
+        from app.middleware.rate_limiting import RateLimitingMiddleware
+        for mw in app.user_middleware:
+            if mw.cls is RateLimitingMiddleware:
+                # 中间件实例在 app.middleware_stack 中，尝试找到并清空缓存
+                pass
+        # 直接遍历已实例化的中间件
+        stack = app.middleware_stack
+        while stack is not None:
+            obj = getattr(stack, 'app', None)
+            if isinstance(obj, RateLimitingMiddleware):
+                obj._memory_cache.clear()
+                break
+            stack = obj
+    except Exception:
+        pass
+
+
+@pytest.fixture(scope="function", autouse=True)
+def _clear_rate_limit():
+    """每个测试前清空限流缓存"""
+    _reset_rate_limiter()
+    yield
+    _reset_rate_limiter()
+
+
 @pytest.fixture(scope="function")
 def db(db_engine):
     """创建数据库会话"""
@@ -69,9 +97,8 @@ def test_user(db):
     user = User(
         username="testuser",
         email="test@example.com",
-        password_hash=get_password_hash("testpassword123"),
+        hashed_password=get_password_hash("testpassword123"),
         is_active=True,
-        role="user",
     )
     db.add(user)
     db.commit()
@@ -88,9 +115,9 @@ def test_admin(db):
     admin = User(
         username="admin",
         email="admin@example.com",
-        password_hash=get_password_hash("adminpassword123"),
+        hashed_password=get_password_hash("adminpassword123"),
         is_active=True,
-        role="admin",
+        is_admin=True,
     )
     db.add(admin)
     db.commit()
@@ -103,9 +130,9 @@ def auth_headers(client, test_user):
     """获取认证头"""
     response = client.post(
         "/api/v1/auth/login",
-        json={"username": "testuser", "password": "testpassword123"},
+        data={"username": "testuser", "password": "testpassword123"},
     )
-    token = response.json()["data"]["access_token"]
+    token = response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -114,9 +141,9 @@ def admin_auth_headers(client, test_admin):
     """获取管理员认证头"""
     response = client.post(
         "/api/v1/auth/login",
-        json={"username": "admin", "password": "adminpassword123"},
+        data={"username": "admin", "password": "adminpassword123"},
     )
-    token = response.json()["data"]["access_token"]
+    token = response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -128,14 +155,14 @@ def test_site(db, test_user):
     site = Site(
         name="Test Site",
         url="https://test.example.com",
+        wp_url="https://test.example.com",
         wp_username="admin",
         wp_password="password",
-        wp_api_key="test_api_key",
         language="zh-CN",
         currency="CNY",
         page_builder="elementor",
+        status="active",
         user_id=test_user.id,
-        is_active=True,
     )
     db.add(site)
     db.commit()

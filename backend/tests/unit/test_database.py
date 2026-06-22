@@ -2,407 +2,281 @@
 数据库操作测试
 """
 import pytest
-from app.models import Site, Task, User, ScraperTask
-from app.database import get_db, SessionLocal
+from sqlalchemy import text
+from app.models import Site, Task, User
+from app.core.database import get_db, Base, engine
 
 
 class TestDatabaseConnection:
     """数据库连接测试"""
 
-    def test_database_connection(self):
-        """测试数据库连接"""
-        try:
-            db = SessionLocal()
-            db.execute("SELECT 1")
-            db.close()
-        except Exception:
-            # 测试环境可能没有数据库，跳过
-            pass
-
-    def test_get_db_generator(self):
+    def test_get_db_generator(self, db):
         """测试get_db生成器"""
-        try:
-            gen = get_db()
-            db = next(gen)
-            assert db is not None
-            try:
-                next(gen)
-            except StopIteration:
-                pass
-        except Exception:
-            pass
+        assert db is not None
+        result = db.execute(text("SELECT 1"))
+        assert result.scalar() == 1
+
+    def test_base_metadata_has_tables(self):
+        """测试Base元数据包含表"""
+        table_names = list(Base.metadata.tables.keys())
+        assert "users" in table_names
+        assert "sites" in table_names
+        assert "tasks" in table_names
 
 
 class TestUserModel:
     """用户模型测试"""
 
-    def test_user_creation(self, db_session):
+    def test_user_creation(self, db, test_user):
         """测试创建用户"""
-        try:
-            user = User(
-                username="testuser",
-                email="test@example.com",
-                hashed_password="hashed_password"
-            )
-            db_session.add(user)
-            db_session.commit()
-            db_session.refresh(user)
-            
-            assert user.id is not None
-            assert user.username == "testuser"
-            assert user.email == "test@example.com"
-        except Exception:
-            pass
+        assert test_user.id is not None
+        assert test_user.username == "testuser"
+        assert test_user.email == "test@example.com"
 
-    def test_user_query(self, db_session):
+    def test_user_query(self, db, test_user):
         """测试查询用户"""
-        try:
-            user = db_session.query(User).filter_by(username="testuser").first()
-            if user:
-                assert user.username == "testuser"
-        except Exception:
-            pass
+        user = db.query(User).filter_by(username="testuser").first()
+        assert user is not None
+        assert user.username == "testuser"
 
-    def test_user_update(self, db_session):
+    def test_user_update(self, db, test_user):
         """测试更新用户"""
-        try:
-            user = db_session.query(User).filter_by(username="testuser").first()
-            if user:
-                user.email = "updated@example.com"
-                db_session.commit()
-                db_session.refresh(user)
-                assert user.email == "updated@example.com"
-        except Exception:
-            pass
+        test_user.email = "updated@example.com"
+        db.commit()
+        db.refresh(test_user)
+        assert test_user.email == "updated@example.com"
 
-    def test_user_delete(self, db_session):
+    def test_user_delete(self, db, test_user):
         """测试删除用户"""
-        try:
-            user = db_session.query(User).filter_by(username="testuser").first()
-            if user:
-                db_session.delete(user)
-                db_session.commit()
-                deleted = db_session.query(User).filter_by(username="testuser").first()
-                assert deleted is None
-        except Exception:
-            pass
+        user_id = test_user.id
+        db.delete(test_user)
+        db.commit()
+        deleted = db.query(User).filter_by(id=user_id).first()
+        assert deleted is None
 
 
 class TestSiteModel:
     """站点模型测试"""
 
-    def test_site_creation(self, db_session):
+    def test_site_creation(self, db, test_site):
         """测试创建站点"""
-        try:
-            site = Site(
-                name="Test Site",
-                url="https://test.example.com",
-                type="wordpress",
-                status="active"
-            )
-            db_session.add(site)
-            db_session.commit()
-            db_session.refresh(site)
-            
-            assert site.id is not None
-            assert site.name == "Test Site"
-            assert site.url == "https://test.example.com"
-        except Exception:
-            pass
+        assert test_site.id is not None
+        assert test_site.name == "Test Site"
+        assert test_site.url == "https://test.example.com"
+        assert test_site.wp_url == "https://test.example.com"
 
-    def test_site_query(self, db_session):
+    def test_site_query(self, db, test_site):
         """测试查询站点"""
-        try:
-            site = db_session.query(Site).filter_by(name="Test Site").first()
-            if site:
-                assert site.name == "Test Site"
-        except Exception:
-            pass
+        site = db.query(Site).filter_by(name="Test Site").first()
+        assert site is not None
+        assert site.name == "Test Site"
 
-    def test_site_update(self, db_session):
+    def test_site_update(self, db, test_site):
         """测试更新站点"""
-        try:
-            site = db_session.query(Site).filter_by(name="Test Site").first()
-            if site:
-                site.name = "Updated Site"
-                db_session.commit()
-                db_session.refresh(site)
-                assert site.name == "Updated Site"
-        except Exception:
-            pass
+        test_site.name = "Updated Site"
+        db.commit()
+        db.refresh(test_site)
+        assert test_site.name == "Updated Site"
 
-    def test_site_delete(self, db_session):
+    def test_site_delete(self, db, test_site):
         """测试删除站点"""
-        try:
-            site = db_session.query(Site).filter_by(name="Updated Site").first()
-            if site:
-                db_session.delete(site)
-                db_session.commit()
-                deleted = db_session.query(Site).filter_by(name="Updated Site").first()
-                assert deleted is None
-        except Exception:
-            pass
+        site_id = test_site.id
+        db.delete(test_site)
+        db.commit()
+        deleted = db.query(Site).filter_by(id=site_id).first()
+        assert deleted is None
 
-    def test_site_pagination(self, db_session):
-        """测试站点分页"""
-        try:
-            # 创建多个站点
-            for i in range(15):
-                site = Site(
-                    name=f"Site {i}",
-                    url=f"https://site{i}.example.com",
-                    type="wordpress",
-                    status="active"
-                )
-                db_session.add(site)
-            db_session.commit()
-            
-            # 测试分页
-            page1 = db_session.query(Site).limit(10).offset(0).all()
-            page2 = db_session.query(Site).limit(10).offset(10).all()
-            
-            assert len(page1) == 10
-            assert len(page2) >= 5
-            
-            # 清理
-            db_session.query(Site).filter(Site.name.like("Site %")).delete()
-            db_session.commit()
-        except Exception:
-            pass
-
-    def test_site_filter_by_status(self, db_session):
+    def test_site_filter_by_status(self, db, test_site):
         """测试按状态筛选站点"""
-        try:
-            active_sites = db_session.query(Site).filter_by(status="active").all()
-            assert isinstance(active_sites, list)
-        except Exception:
-            pass
+        active_sites = db.query(Site).filter_by(status="active").all()
+        assert isinstance(active_sites, list)
+        assert len(active_sites) >= 1
 
-    def test_site_filter_by_type(self, db_session):
-        """测试按类型筛选站点"""
-        try:
-            wp_sites = db_session.query(Site).filter_by(type="wordpress").all()
-            assert isinstance(wp_sites, list)
-        except Exception:
-            pass
+    def test_site_filter_by_page_builder(self, db, test_site):
+        """测试按页面构建器筛选站点"""
+        sites = db.query(Site).filter_by(page_builder="elementor").all()
+        assert isinstance(sites, list)
+        assert len(sites) >= 1
 
 
 class TestTaskModel:
     """任务模型测试"""
 
-    def test_task_creation(self, db_session):
+    def test_task_creation(self, db, test_user, test_site):
         """测试创建任务"""
-        try:
-            task = Task(
-                name="Test Task",
-                type="scraper",
-                status="pending",
-                progress=0
-            )
-            db_session.add(task)
-            db_session.commit()
-            db_session.refresh(task)
-            
-            assert task.id is not None
-            assert task.name == "Test Task"
-            assert task.status == "pending"
-        except Exception:
-            pass
+        task = Task(
+            name="Test Task",
+            task_type="scrape",
+            status="pending",
+            progress=0,
+            site_id=test_site.id,
+            user_id=test_user.id,
+        )
+        db.add(task)
+        db.commit()
+        db.refresh(task)
 
-    def test_task_status_transition(self, db_session):
+        assert task.id is not None
+        assert task.name == "Test Task"
+        assert task.status == "pending"
+
+    def test_task_status_transition(self, db, test_user, test_site):
         """测试任务状态转换"""
-        try:
-            task = db_session.query(Task).filter_by(name="Test Task").first()
-            if task:
-                task.status = "running"
-                task.progress = 50
-                db_session.commit()
-                db_session.refresh(task)
-                assert task.status == "running"
-                assert task.progress == 50
-                
-                task.status = "completed"
-                task.progress = 100
-                db_session.commit()
-                db_session.refresh(task)
-                assert task.status == "completed"
-                assert task.progress == 100
-        except Exception:
-            pass
+        task = Task(
+            name="Status Task",
+            task_type="scrape",
+            status="pending",
+            progress=0,
+            site_id=test_site.id,
+            user_id=test_user.id,
+        )
+        db.add(task)
+        db.commit()
+        db.refresh(task)
 
-    def test_task_query_by_status(self, db_session):
+        task.status = "running"
+        task.progress = 50
+        db.commit()
+        db.refresh(task)
+        assert task.status == "running"
+        assert task.progress == 50
+
+        task.status = "completed"
+        task.progress = 100
+        db.commit()
+        db.refresh(task)
+        assert task.status == "completed"
+        assert task.progress == 100
+
+    def test_task_query_by_status(self, db, test_user, test_site):
         """测试按状态查询任务"""
-        try:
-            running_tasks = db_session.query(Task).filter_by(status="running").all()
-            assert isinstance(running_tasks, list)
-        except Exception:
-            pass
+        task = Task(
+            name="Query Task",
+            task_type="scrape",
+            status="running",
+            progress=30,
+            site_id=test_site.id,
+            user_id=test_user.id,
+        )
+        db.add(task)
+        db.commit()
 
-    def test_task_delete(self, db_session):
+        running_tasks = db.query(Task).filter_by(status="running").all()
+        assert isinstance(running_tasks, list)
+        assert len(running_tasks) >= 1
+
+    def test_task_delete(self, db, test_user, test_site):
         """测试删除任务"""
-        try:
-            task = db_session.query(Task).filter_by(name="Test Task").first()
-            if task:
-                db_session.delete(task)
-                db_session.commit()
-        except Exception:
-            pass
+        task = Task(
+            name="Delete Task",
+            task_type="scrape",
+            status="pending",
+            progress=0,
+            site_id=test_site.id,
+            user_id=test_user.id,
+        )
+        db.add(task)
+        db.commit()
+        task_id = task.id
 
-
-class TestScraperTaskModel:
-    """采集任务模型测试"""
-
-    def test_scraper_task_creation(self, db_session):
-        """测试创建采集任务"""
-        try:
-            task = ScraperTask(
-                url="https://example.com/products",
-                type="product_list",
-                status="pending",
-                items_scraped=0,
-                items_total=0
-            )
-            db_session.add(task)
-            db_session.commit()
-            db_session.refresh(task)
-            
-            assert task.id is not None
-            assert task.url == "https://example.com/products"
-            assert task.status == "pending"
-        except Exception:
-            pass
-
-    def test_scraper_task_progress(self, db_session):
-        """测试采集任务进度"""
-        try:
-            task = db_session.query(ScraperTask).filter_by(
-                url="https://example.com/products"
-            ).first()
-            if task:
-                task.items_scraped = 50
-                task.items_total = 100
-                task.status = "running"
-                db_session.commit()
-                db_session.refresh(task)
-                assert task.items_scraped == 50
-                assert task.items_total == 100
-                assert task.status == "running"
-        except Exception:
-            pass
-
-    def test_scraper_task_delete(self, db_session):
-        """测试删除采集任务"""
-        try:
-            task = db_session.query(ScraperTask).filter_by(
-                url="https://example.com/products"
-            ).first()
-            if task:
-                db_session.delete(task)
-                db_session.commit()
-        except Exception:
-            pass
+        db.delete(task)
+        db.commit()
+        deleted = db.query(Task).filter_by(id=task_id).first()
+        assert deleted is None
 
 
 class TestDatabaseTransactions:
     """数据库事务测试"""
 
-    def test_transaction_rollback(self, db_session):
+    def test_transaction_rollback(self, db, test_user):
         """测试事务回滚"""
-        try:
-            # 开始事务
-            savepoint = db_session.begin_nested()
-            
-            site = Site(
-                name="Rollback Test",
-                url="https://rollback.example.com",
-                type="wordpress"
-            )
-            db_session.add(site)
-            db_session.flush()
-            
-            # 回滚
-            savepoint.rollback()
-            
-            # 验证数据不存在
-            site = db_session.query(Site).filter_by(name="Rollback Test").first()
-            assert site is None
-        except Exception:
-            pass
+        savepoint = db.begin_nested()
 
-    def test_transaction_commit(self, db_session):
+        site = Site(
+            name="Rollback Test",
+            url="https://rollback.example.com",
+            wp_url="https://rollback.example.com",
+            wp_username="admin",
+            wp_password="password",
+            user_id=test_user.id,
+        )
+        db.add(site)
+        db.flush()
+
+        savepoint.rollback()
+
+        site = db.query(Site).filter_by(name="Rollback Test").first()
+        assert site is None
+
+    def test_transaction_commit(self, db, test_user):
         """测试事务提交"""
-        try:
-            site = Site(
-                name="Commit Test",
-                url="https://commit.example.com",
-                type="wordpress"
-            )
-            db_session.add(site)
-            db_session.commit()
-            
-            site = db_session.query(Site).filter_by(name="Commit Test").first()
-            assert site is not None
-            
-            # 清理
-            db_session.delete(site)
-            db_session.commit()
-        except Exception:
-            pass
+        site = Site(
+            name="Commit Test",
+            url="https://commit.example.com",
+            wp_url="https://commit.example.com",
+            wp_username="admin",
+            wp_password="password",
+            user_id=test_user.id,
+        )
+        db.add(site)
+        db.commit()
+
+        site = db.query(Site).filter_by(name="Commit Test").first()
+        assert site is not None
+
+        db.delete(site)
+        db.commit()
 
 
 class TestDatabasePerformance:
     """数据库性能测试"""
 
-    def test_bulk_insert(self, db_session):
+    def test_bulk_insert(self, db, test_user):
         """测试批量插入"""
-        try:
-            sites = []
-            for i in range(100):
-                sites.append(Site(
-                    name=f"Bulk Site {i}",
-                    url=f"https://bulk{i}.example.com",
-                    type="wordpress",
-                    status="active"
-                ))
-            
-            db_session.bulk_save_objects(sites)
-            db_session.commit()
-            
-            count = db_session.query(Site).filter(
-                Site.name.like("Bulk Site %")
-            ).count()
-            assert count == 100
-            
-            # 清理
-            db_session.query(Site).filter(
-                Site.name.like("Bulk Site %")
-            ).delete()
-            db_session.commit()
-        except Exception:
-            pass
+        sites = []
+        for i in range(20):
+            sites.append(Site(
+                name=f"Bulk Site {i}",
+                url=f"https://bulk{i}.example.com",
+                wp_url=f"https://bulk{i}.example.com",
+                wp_username="admin",
+                wp_password="password",
+                user_id=test_user.id,
+            ))
 
-    def test_query_optimization(self, db_session):
+        db.bulk_save_objects(sites)
+        db.commit()
+
+        count = db.query(Site).filter(
+            Site.name.like("Bulk Site %")
+        ).count()
+        assert count == 20
+
+        db.query(Site).filter(
+            Site.name.like("Bulk Site %")
+        ).delete()
+        db.commit()
+
+    def test_query_optimization(self, db, test_user):
         """测试查询优化"""
-        try:
-            # 创建测试数据
-            for i in range(50):
-                site = Site(
-                    name=f"Query Test {i}",
-                    url=f"https://query{i}.example.com",
-                    type="wordpress",
-                    status="active" if i % 2 == 0 else "inactive"
-                )
-                db_session.add(site)
-            db_session.commit()
-            
-            # 测试带索引的查询
-            active_sites = db_session.query(Site).filter_by(status="active").all()
-            assert isinstance(active_sites, list)
-            
-            # 清理
-            db_session.query(Site).filter(
-                Site.name.like("Query Test %")
-            ).delete()
-            db_session.commit()
-        except Exception:
-            pass
+        for i in range(10):
+            site = Site(
+                name=f"Query Test {i}",
+                url=f"https://query{i}.example.com",
+                wp_url=f"https://query{i}.example.com",
+                wp_username="admin",
+                wp_password="password",
+                status="active" if i % 2 == 0 else "inactive",
+                user_id=test_user.id,
+            )
+            db.add(site)
+        db.commit()
+
+        active_sites = db.query(Site).filter_by(status="active").all()
+        assert isinstance(active_sites, list)
+        assert len(active_sites) >= 5
+
+        db.query(Site).filter(
+            Site.name.like("Query Test %")
+        ).delete()
+        db.commit()

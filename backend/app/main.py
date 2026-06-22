@@ -16,6 +16,8 @@ from app.middleware import (
     RequestLoggingMiddleware,
     RateLimitingMiddleware,
     ErrorHandlerMiddleware,
+    SecurityHeadersMiddleware,
+    CSRFMiddleware,
 )
 
 logger = get_logger(__name__)
@@ -43,6 +45,8 @@ def create_app() -> FastAPI:
     
     # 自定义中间件（注意：中间件的添加顺序很重要，最先添加的最后执行）
     app.add_middleware(ErrorHandlerMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(CSRFMiddleware)
     app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(RateLimitingMiddleware, default_limit=settings.RATE_LIMIT_PER_MINUTE)
     

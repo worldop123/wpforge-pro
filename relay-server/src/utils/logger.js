@@ -43,7 +43,10 @@ function createLogger(moduleName) {
   return logger.child({ module: moduleName });
 }
 
-module.exports = {
-  logger,
-  createLogger,
-};
+// 默认导出 logger 实例本身（index.js 直接 require 后使用 logger.info），
+// 同时挂载 createLogger 与 logger 以支持解构导入：
+//   const { createLogger } = require('./utils/logger');
+//   const { logger } = require('./utils/logger');
+module.exports = logger;
+module.exports.createLogger = createLogger;
+module.exports.logger = logger;

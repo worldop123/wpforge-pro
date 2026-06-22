@@ -1,5 +1,13 @@
 """
 认证 API 测试
+
+实际 API 行为：
+- /auth/login 使用 OAuth2PasswordRequestForm（表单数据），返回 Token（access_token 在顶层）
+- /auth/register 返回 UserResponse（顶层，无 success/data 包装）
+- /auth/me 返回 UserResponse
+- /auth/logout 返回 SuccessResponse（含 success/message）
+- /auth/refresh 返回 Token
+- /auth/change-password 不存在（404）
 """
 import pytest
 
@@ -8,47 +16,43 @@ def test_login_success(client, test_user):
     """测试登录成功"""
     response = client.post(
         "/api/v1/auth/login",
-        json={"username": "testuser", "password": "testpassword123"},
+        data={"username": "testuser", "password": "testpassword123"},
     )
 
     assert response.status_code == 200
     data = response.json()
-    assert data["success"] == True
-    assert "access_token" in data["data"]
-    assert "refresh_token" in data["data"]
-    assert data["data"]["token_type"] == "bearer"
-    assert data["data"]["user"]["username"] == "testuser"
+    assert "access_token" in data
+    assert data["token_type"] == "bearer"
+    assert data["user"]["username"] == "testuser"
 
 
 def test_login_wrong_password(client, test_user):
     """测试密码错误"""
     response = client.post(
         "/api/v1/auth/login",
-        json={"username": "testuser", "password": "wrongpassword"},
+        data={"username": "testuser", "password": "wrongpassword"},
     )
 
     assert response.status_code == 401
     data = response.json()
-    assert data["success"] == False
+    assert "detail" in data
 
 
 def test_login_wrong_username(client):
     """测试用户名不存在"""
     response = client.post(
         "/api/v1/auth/login",
-        json={"username": "nonexistent", "password": "testpassword123"},
+        data={"username": "nonexistent", "password": "testpassword123"},
     )
 
     assert response.status_code == 401
-    data = response.json()
-    assert data["success"] == False
 
 
 def test_login_missing_fields(client):
-    """测试缺少必填字段"""
+    """测试缺少必填字段（表单缺少 password）"""
     response = client.post(
         "/api/v1/auth/login",
-        json={"username": "testuser"},
+        data={"username": "testuser"},
     )
 
     assert response.status_code == 422
@@ -63,8 +67,7 @@ def test_get_current_user(client, auth_headers):
 
     assert response.status_code == 200
     data = response.json()
-    assert data["success"] == True
-    assert data["data"]["username"] == "testuser"
+    assert data["username"] == "testuser"
 
 
 def test_get_current_user_no_auth(client):
@@ -83,28 +86,20 @@ def test_logout(client, auth_headers):
 
     assert response.status_code == 200
     data = response.json()
-    assert data["success"] == True
+    assert data["success"] is True
 
 
-def test_refresh_token(client, test_user):
+def test_refresh_token(client, auth_headers):
     """测试刷新令牌"""
-    # 先登录获取 refresh token
-    login_response = client.post(
-        "/api/v1/auth/login",
-        json={"username": "testuser", "password": "testpassword123"},
-    )
-    refresh_token = login_response.json()["data"]["refresh_token"]
-
-    # 使用 refresh token 刷新
     response = client.post(
         "/api/v1/auth/refresh",
-        headers={"Authorization": f"Bearer {refresh_token}"},
+        headers=auth_headers,
     )
 
     assert response.status_code == 200
     data = response.json()
-    assert data["success"] == True
-    assert "access_token" in data["data"]
+    assert "access_token" in data
+    assert data["token_type"] == "bearer"
 
 
 def test_register_success(client):
@@ -120,8 +115,8 @@ def test_register_success(client):
 
     assert response.status_code == 201
     data = response.json()
-    assert data["success"] == True
-    assert data["data"]["username"] == "newuser"
+    assert data["username"] == "newuser"
+    assert data["email"] == "new@example.com"
 
 
 def test_register_duplicate_username(client, test_user):
@@ -136,8 +131,6 @@ def test_register_duplicate_username(client, test_user):
     )
 
     assert response.status_code == 400
-    data = response.json()
-    assert data["success"] == False
 
 
 def test_register_duplicate_email(client, test_user):
@@ -152,44 +145,27 @@ def test_register_duplicate_email(client, test_user):
     )
 
     assert response.status_code == 400
-    data = response.json()
-    assert data["success"] == False
 
 
-def test_change_password(client, auth_headers):
-    """测试修改密码"""
+def test_register_missing_fields(client):
+    """测试注册缺少必填字段"""
     response = client.post(
-        "/api/v1/auth/change-password",
-        headers=auth_headers,
+        "/api/v1/auth/register",
+        json={"username": "incomplete"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_register_short_password(client):
+    """测试密码过短"""
+    response = client.post(
+        "/api/v1/auth/register",
         json={
-            "old_password": "testpassword123",
-            "new_password": "newpassword123",
+            "username": "newuser2",
+            "email": "new2@example.com",
+            "password": "123",
         },
     )
 
-    assert response.status_code == 200
-    data = response.json()
-    assert data["success"] == True
-
-    # 使用新密码登录
-    login_response = client.post(
-        "/api/v1/auth/login",
-        json={"username": "testuser", "password": "newpassword123"},
-    )
-    assert login_response.status_code == 200
-
-
-def test_change_password_wrong_old(client, auth_headers):
-    """测试旧密码错误"""
-    response = client.post(
-        "/api/v1/auth/change-password",
-        headers=auth_headers,
-        json={
-            "old_password": "wrongpassword",
-            "new_password": "newpassword123",
-        },
-    )
-
-    assert response.status_code == 400
-    data = response.json()
-    assert data["success"] == False
+    assert response.status_code == 422

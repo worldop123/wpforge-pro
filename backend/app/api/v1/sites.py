@@ -1,9 +1,10 @@
 """
 站点管理API - WordPress站点的增删改查
 """
+from functools import lru_cache
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
@@ -225,37 +226,90 @@ async def get_site_stats(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """获取站点统计信息"""
+    """获取站点统计信息（带缓存）"""
+    # 使用缓存键，避免重复查询
+    cache_key = f"site_stats:{current_user.id}:{site_id}"
+
+    # 检查内存缓存
+    cached = _get_cached_stats(cache_key)
+    if cached is not None:
+        return SuccessResponse(message="获取统计成功（缓存）", data=cached)
+
     site = db.query(Site).filter(
         Site.id == site_id,
         Site.user_id == current_user.id,
         Site.is_deleted == False
     ).first()
-    
+
     if not site:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="站点不存在"
         )
-    
+
     # 统计产品数量
     from app.models.product import Product
     product_count = db.query(Product).filter(
         Product.site_id == site_id,
         Product.is_deleted == False
     ).count()
-    
+
     # 统计任务数量
     from app.models.task import Task
     task_count = db.query(Task).filter(
         Task.site_id == site_id
     ).count()
-    
+
+    stats_data = {
+        "products": product_count,
+        "tasks": task_count,
+        "last_sync": site.last_sync_at.isoformat() if site.last_sync_at else None,
+    }
+
+    # 写入缓存
+    _set_cached_stats(cache_key, stats_data)
+
     return SuccessResponse(
         message="获取统计成功",
-        data={
-            "products": product_count,
-            "tasks": task_count,
-            "last_sync": site.last_sync_at.isoformat() if site.last_sync_at else None,
-        }
+        data=stats_data
     )
+
+
+# 简单的内存缓存（带TTL），用于站点统计等频繁查询
+import time
+
+_stats_cache: dict = {}
+_STATS_CACHE_TTL = 30  # 缓存30秒
+
+
+def _get_cached_stats(key: str):
+    """从缓存获取统计数据"""
+    entry = _stats_cache.get(key)
+    if entry is None:
+        return None
+    if time.time() - entry["time"] > _STATS_CACHE_TTL:
+        del _stats_cache[key]
+        return None
+    return entry["data"]
+
+
+def _set_cached_stats(key: str, data):
+    """写入缓存"""
+    _stats_cache[key] = {"data": data, "time": time.time()}
+    # 清理过期缓存
+    expired = [k for k, v in _stats_cache.items() if time.time() - v["time"] > _STATS_CACHE_TTL * 2]
+    for k in expired:
+        del _stats_cache[k]
+
+
+def clear_stats_cache(site_id: int = None, user_id: int = None):
+    """清除统计缓存"""
+    if site_id is None and user_id is None:
+        _stats_cache.clear()
+    else:
+        keys_to_remove = [k for k in _stats_cache if (
+            (site_id is None or f":{site_id}" in k) and
+            (user_id is None or f":{user_id}:" in k)
+        )]
+        for k in keys_to_remove:
+            del _stats_cache[k]

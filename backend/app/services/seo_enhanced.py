@@ -503,7 +503,7 @@ class InternalLinkBuilder:
                 continue
             
             # 只替换第一次出现，且不在已有的链接中
-            pattern = re.compile(rf'(?<!<a[^>]*>){re.escape(keyword)}(?!</a>)', re.IGNORECASE)
+            pattern = re.compile(rf'{re.escape(keyword)}(?!</a>)', re.IGNORECASE)
             match = pattern.search(linked_content)
             
             if match:

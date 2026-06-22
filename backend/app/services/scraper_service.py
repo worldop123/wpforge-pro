@@ -1,14 +1,16 @@
 """
 产品采集器服务 - 基于Playwright的可视化采集引擎
 支持全量字段采集、反检测、代理池
+高级功能：变体采集、增量采集、定时采集、整站采集
 """
 
-from typing import List, Dict, Optional, Any, Tuple
+from typing import List, Dict, Optional, Any, Tuple, Set
 from dataclasses import dataclass, field
 import asyncio
 import time
 import random
 import re
+import hashlib
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from decimal import Decimal
@@ -76,6 +78,23 @@ class ScrapingConfig:
     # 其他
     timeout: int = 30000
     headless: bool = True
+
+    # 高级功能开关
+    scrape_variations: bool = True  # 是否采集变体
+    incremental: bool = False  # 是否启用增量采集
+    full_site: bool = False  # 是否启用整站采集
+    respect_robots_txt: bool = True  # 是否遵守 robots.txt
+    max_depth: int = 3  # 整站采集最大深度
+    # 增量采集：基于内容 hash 跳过未变化页面
+    incremental_hash_field: str = "raw_html"
+    # 已采集内容的 hash 集合（外部传入，用于增量判断）
+    known_hashes: Set[str] = field(default_factory=set)
+    # 已采集 URL -> last_modified 的映射（用于增量判断）
+    known_last_modified: Dict[str, str] = field(default_factory=dict)
+    # Cron 表达式（用于定时采集）
+    cron_expression: Optional[str] = None
+    # 整站采集时排除的 URL 模式
+    exclude_patterns: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -418,10 +437,134 @@ class ProductScraper:
         
         # 获取原始HTML
         product.raw_html = await self.page.content()
-        
+
+        # 增量采集：基于 hash 判断是否需要跳过
+        if self.config.incremental:
+            content_hash = self._compute_content_hash(product)
+            product.meta_data["content_hash"] = content_hash
+            if content_hash in self.config.known_hashes:
+                logger.info(f"Incremental scrape: skip unchanged {url}")
+                product.meta_data["skipped_incremental"] = True
+                return product
+            # 标记为已采集，避免重复
+            self.config.known_hashes.add(content_hash)
+
+        # 变体采集：如果是可变产品，提取所有变体
+        if self.config.scrape_variations:
+            variations = await self._extract_variations()
+            if variations:
+                product.variations = variations
+                product.is_variable = True
+                logger.info(f"Extracted {len(variations)} variations for {url}")
+
         logger.info(f"Scraped product: {product.title or url}")
         
         return product
+
+    def _compute_content_hash(self, product: ScrapedProduct) -> str:
+        """计算产品内容的 hash，用于增量采集判断"""
+        field_name = self.config.incremental_hash_field
+        content = getattr(product, field_name, None) or product.raw_html or ""
+        if not isinstance(content, str):
+            content = str(content)
+        return hashlib.md5(content.encode("utf-8")).hexdigest()
+
+    async def _extract_variations(self) -> List[Dict]:
+        """提取可变产品的所有变体（颜色/尺寸/规格）
+
+        支持 WooCommerce 默认的变体表结构，以及常见的自定义属性选择器。
+        返回变体字典列表，每个字典包含 attributes 和 price 等字段。
+        """
+        variations: List[Dict] = []
+
+        # 1. 尝试从内嵌的 JSON 数据中提取变体（WooCommerce variations_form）
+        try:
+            variations = await self._extract_variations_from_json()
+            if variations:
+                return variations
+        except Exception as e:
+            logger.debug(f"Failed to extract variations from JSON: {e}")
+
+        # 2. 回退到 DOM 解析
+        try:
+            variations = await self._extract_variations_from_dom()
+        except Exception as e:
+            logger.debug(f"Failed to extract variations from DOM: {e}")
+
+        return variations
+
+    async def _extract_variations_from_json(self) -> List[Dict]:
+        """从 WooCommerce 内嵌 JSON 提取变体"""
+        try:
+            script_content = await self.page.evaluate(
+                """() => {
+                    const scripts = document.querySelectorAll('script[type="application/json"]');
+                    for (const s of scripts) {
+                        const text = s.textContent || '';
+                        if (text.includes('variations') || text.includes('product_variations')) {
+                            return text;
+                        }
+                    }
+                    return null;
+                }"""
+            )
+            if not script_content:
+                return []
+            import json
+            data = json.loads(script_content)
+            if isinstance(data, list):
+                return [
+                    {
+                        "variation_id": v.get("variation_id"),
+                        "attributes": {
+                            (a.get("attribute") or ""): a.get("value")
+                            for a in v.get("attributes", [])
+                        },
+                        "price": v.get("display_price"),
+                        "regular_price": v.get("display_regular_price"),
+                        "sku": v.get("sku"),
+                        "is_in_stock": v.get("is_in_stock", True),
+                        "image": (v.get("image") or {}).get("src"),
+                    }
+                    for v in data
+                ]
+        except Exception as e:
+            logger.debug(f"Variations JSON parse failed: {e}")
+        return []
+
+    async def _extract_variations_from_dom(self) -> List[Dict]:
+        """从 DOM 提取变体属性和价格"""
+        variations: List[Dict] = []
+        # 提取属性
+        attribute_selectors = [
+            'table.variations select',
+            '.variations select',
+            'select[name^="attribute_"]',
+        ]
+        attributes: Dict[str, List[str]] = {}
+        for sel in attribute_selectors:
+            elements = await self.page.query_selector_all(sel)
+            for element in elements:
+                name = await element.get_attribute("name") or ""
+                options = await element.query_selector_all("option")
+                values = []
+                for opt in options:
+                    val = await opt.get_attribute("value")
+                    if val and val != "":
+                        values.append(val)
+                if name and values:
+                    attributes[name] = values
+
+        if not attributes:
+            return []
+
+        # 简化：将属性组合作为单个变体记录
+        variations.append({
+            "attributes": attributes,
+            "price": None,
+            "source": "dom",
+        })
+        return variations
     
     async def _extract_images(self) -> List[str]:
         """提取产品图片"""
@@ -555,6 +698,133 @@ class ProductScraper:
         finally:
             await self._close_browser()
 
+    async def scrape_full_site(self, progress_callback=None) -> List[ScrapedProduct]:
+        """整站采集：从起始 URL 出发，自动发现产品链接并爬取整个网站
+
+        通过 BFS 方式遍历网站，根据 product_link_selector 或常见产品 URL 模式识别产品页。
+        受 max_depth、max_products、exclude_patterns 等配置限制。
+        """
+        if not self.config.full_site:
+            # 如果未启用整站采集，回退到普通采集
+            return await self.scrape(progress_callback=progress_callback)
+
+        await self._init_browser()
+        try:
+            products: List[ScrapedProduct] = []
+            visited: Set[str] = set()
+            # 队列元素：(url, depth)
+            queue: List[Tuple[str, int]] = [(self.config.start_url, 0)]
+            base_domain = self._get_domain(self.config.start_url)
+
+            while queue and len(products) < self.config.max_products:
+                url, depth = queue.pop(0)
+                if url in visited:
+                    continue
+                if depth > self.config.max_depth:
+                    continue
+                if self._is_excluded(url):
+                    continue
+                visited.add(url)
+
+                logger.info(f"Full-site scrape (depth={depth}): {url}")
+                success = await self._goto(url)
+                if not success:
+                    continue
+
+                # 判断是否是产品页
+                is_product = await self._is_product_page()
+                if is_product:
+                    product = await self.scrape_product_page(url)
+                    if product:
+                        products.append(product)
+                        if progress_callback:
+                            progress_callback(len(products), self.config.max_products)
+                        if len(products) >= self.config.max_products:
+                            break
+
+                # 提取页面上的所有链接，继续 BFS
+                if depth < self.config.max_depth:
+                    links = await self._extract_page_links(base_domain)
+                    for link in links:
+                        if link not in visited:
+                            queue.append((link, depth + 1))
+
+            self.scraped_products = products
+            logger.info(f"Full-site scraping complete: {len(products)} products")
+            return products
+        finally:
+            await self._close_browser()
+
+    def _get_domain(self, url: str) -> str:
+        """获取 URL 的域名"""
+        try:
+            parsed = urlparse(url)
+            return parsed.netloc
+        except Exception:
+            return ""
+
+    def _is_excluded(self, url: str) -> bool:
+        """判断 URL 是否匹配排除模式"""
+        for pattern in self.config.exclude_patterns:
+            try:
+                if re.search(pattern, url):
+                    return True
+            except re.error:
+                if pattern in url:
+                    return True
+        return False
+
+    async def _is_product_page(self) -> bool:
+        """判断当前页面是否是产品详情页"""
+        # 优先使用配置的产品选择器
+        if self.config.product_selectors:
+            for selector_cfg in self.config.product_selectors.values():
+                try:
+                    element = await self.page.query_selector(selector_cfg.selector)
+                    if element:
+                        return True
+                except Exception:
+                    continue
+        # 回退到常见的产品页标识
+        product_indicators = [
+            'body.single-product',
+            '.product',
+            '.woocommerce-product-details',
+            '[itemtype*="Product"]',
+        ]
+        for selector in product_indicators:
+            try:
+                element = await self.page.query_selector(selector)
+                if element:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def _extract_page_links(self, base_domain: str) -> List[str]:
+        """提取当前页面上同域的所有链接，用于整站采集"""
+        links: List[str] = []
+        try:
+            anchors = await self.page.query_selector_all("a[href]")
+            for anchor in anchors:
+                href = await anchor.get_attribute("href")
+                if not href:
+                    continue
+                # 跳过锚点、javascript、邮件等
+                if href.startswith("#") or href.startswith("javascript:") or href.startswith("mailto:"):
+                    continue
+                full_url = urljoin(self.page.url, href)
+                # 只保留同域链接
+                if self._get_domain(full_url) != base_domain:
+                    continue
+                # 去除 fragment
+                full_url = full_url.split("#")[0]
+                if full_url and full_url not in links:
+                    links.append(full_url)
+        except Exception as e:
+            logger.debug(f"Failed to extract page links: {e}")
+        return links
+
 
 class SelectorGenerator:
     """选择器生成器 - 用于可视化点选生成选择器"""
@@ -678,3 +948,141 @@ def create_woocommerce_scraper(start_url: str, **kwargs) -> ProductScraper:
         **kwargs
     )
     return ProductScraper(config)
+
+
+# ==================== 定时采集调度 ====================
+
+# 默认的 Celery beat 调度配置：将 cron_expression 映射到 Celery beat schedule
+DEFAULT_SCHEDULED_SCRAPES: List[Dict[str, Any]] = [
+    {
+        "name": "daily-product-scrape",
+        "task": "app.tasks.scraping_tasks.scrape_products_task",
+        "cron": "0 2 * * *",  # 每天 02:00 执行
+        "description": "每日定时采集产品",
+    },
+    {
+        "name": "weekly-full-site-scrape",
+        "task": "app.tasks.scraping_tasks.scrape_products_task",
+        "cron": "0 3 * * 1",  # 每周一 03:00 执行
+        "description": "每周整站采集",
+    },
+]
+
+
+def build_celery_beat_schedule(scheduled_scrapes: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Dict[str, Any]]:
+    """根据定时采集配置生成 Celery beat schedule 字典
+
+    Args:
+        scheduled_scrapes: 定时采集配置列表，每项包含 name/task/cron/args 等
+
+    Returns:
+        Celery beat schedule 字典，可直接传给 celery_app.conf.beat_schedule
+    """
+    from celery.schedules import crontab
+
+    schedule: Dict[str, Dict[str, Any]] = {}
+    scrapes = scheduled_scrapes or DEFAULT_SCHEDULED_SCRAPES
+    for item in scrapes:
+        name = item.get("name")
+        task = item.get("task")
+        cron_expr = item.get("cron") or item.get("cron_expression")
+        if not name or not task or not cron_expr:
+            continue
+        try:
+            parts = cron_expr.split()
+            if len(parts) != 5:
+                continue
+            minute, hour, day_of_month, month_of_year, day_of_week = parts
+            schedule[name] = {
+                "task": task,
+                "schedule": crontab(
+                    minute=minute,
+                    hour=hour,
+                    day_of_month=day_of_month,
+                    month_of_year=month_of_year,
+                    day_of_week=day_of_week,
+                ),
+                "args": item.get("args", []),
+                "kwargs": item.get("kwargs", {}),
+            }
+        except Exception as e:
+            logger.warning(f"Failed to build schedule for {name}: {e}")
+            continue
+    return schedule
+
+
+def parse_cron_expression(cron_expr: str) -> Optional[Dict[str, str]]:
+    """解析 cron 表达式为各字段字典
+
+    Args:
+        cron_expr: 标准 5 字段 cron 表达式，如 "0 2 * * *"
+
+    Returns:
+        包含 minute/hour/day_of_month/month_of_year/day_of_week 的字典，解析失败返回 None
+    """
+    if not cron_expr:
+        return None
+    parts = cron_expr.split()
+    if len(parts) != 5:
+        return None
+    return {
+        "minute": parts[0],
+        "hour": parts[1],
+        "day_of_month": parts[2],
+        "month_of_year": parts[3],
+        "day_of_week": parts[4],
+    }
+
+
+def should_run_now(cron_expr: str, now=None) -> bool:
+    """判断给定 cron 表达式是否在当前时间应该触发（简化版，用于测试和预检）
+
+    Args:
+        cron_expr: 标准 5 字段 cron 表达式
+        now: 可选的当前时间 datetime，默认 utcnow()
+
+    Returns:
+        是否应该触发
+    """
+    from datetime import datetime
+    parsed = parse_cron_expression(cron_expr)
+    if not parsed:
+        return False
+    if now is None:
+        now = datetime.utcnow()
+
+    def _match(value: str, current: int, max_val: int) -> bool:
+        if value == "*":
+            return True
+        # 处理逗号分隔
+        if "," in value:
+            for v in value.split(","):
+                if _match(v, current, max_val):
+                    return True
+            return False
+        # 处理步长
+        if "/" in value:
+            base, step = value.split("/")
+            try:
+                step_int = int(step)
+                if base == "*":
+                    return current % step_int == 0
+                try:
+                    base_int = int(base)
+                    return current >= base_int and (current - base_int) % step_int == 0
+                except ValueError:
+                    return True
+            except ValueError:
+                return False
+        try:
+            return int(value) == current
+        except ValueError:
+            return True
+
+    return (
+        _match(parsed["minute"], now.minute, 59)
+        and _match(parsed["hour"], now.hour, 23)
+        and _match(parsed["day_of_month"], now.day, 31)
+        and _match(parsed["month_of_year"], now.month, 12)
+        and _match(parsed["day_of_week"], now.weekday(), 6)
+    )

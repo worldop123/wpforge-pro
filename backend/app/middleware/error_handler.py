@@ -9,6 +9,7 @@ from starlette.responses import JSONResponse
 from fastapi import status
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy.exc import SQLAlchemyError
+from app.core.config import settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)

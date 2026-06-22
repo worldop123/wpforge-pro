@@ -5,6 +5,8 @@
 import time
 import ssl
 import socket
+import asyncio
+import hashlib
 import datetime
 from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass, field
@@ -791,3 +793,964 @@ class SiteMonitorService:
 
 # 全局监控服务实例
 site_monitor_service = SiteMonitorService()
+
+
+# ==================== 扩展监控类型 ====================
+
+class ExtendedMonitorType(str, Enum):
+    """扩展监控类型"""
+    CONTENT_CHANGE = "content_change"   # 首页内容变化
+    KEYWORD_RANKING = "keyword_ranking" # 关键词排名
+    BACKLINK = "backlink"               # 外链数量
+    TRAFFIC = "traffic"                 # 流量统计
+    HTTP_STATUS = "http_status"         # HTTP状态码
+    RESPONSE_TIME = "response_time"     # 响应时间
+
+
+class WebhookType(str, Enum):
+    """Webhook类型"""
+    FEISHU = "feishu"       # 飞书
+    DINGTALK = "dingtalk"   # 钉钉
+    WECOM = "wecom"         # 企业微信
+    SLACK = "slack"         # Slack
+    GENERIC = "generic"     # 通用Webhook
+
+
+@dataclass
+class ContentChangeResult:
+    """首页内容变化监控结果"""
+    url: str
+    changed: bool
+    similarity: float = 0.0  # 内容相似度 0-1
+    old_hash: str = ""
+    new_hash: str = ""
+    message: str = ""
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass
+class KeywordRankingResult:
+    """关键词排名监控结果"""
+    keyword: str
+    url: str
+    position: int = 0
+    previous_position: Optional[int] = None
+    change: int = 0
+    search_engine: str = "google"
+    message: str = ""
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass
+class BacklinkResult:
+    """外链监控结果"""
+    url: str
+    backlink_count: int = 0
+    previous_count: Optional[int] = None
+    change: int = 0
+    referring_domains: int = 0
+    message: str = ""
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass
+class TrafficResult:
+    """流量统计结果"""
+    url: str
+    visits: int = 0
+    unique_visitors: int = 0
+    page_views: int = 0
+    bounce_rate: float = 0.0
+    avg_session_duration: float = 0.0
+    message: str = ""
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass
+class AlertRule:
+    """告警规则"""
+    name: str
+    monitor_type: str
+    threshold: float = 0.0
+    comparison: str = ">"  # >, <, >=, <=, ==, !=
+    consecutive_failures: int = 1  # 连续N次失败才告警
+    cooldown_period: int = 3600  # 告警静默期（秒）
+    escalation_after: int = 0  # N次告警后升级（0=不升级）
+    escalation_level: str = "critical"  # 升级后的级别
+    enabled: bool = True
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+class ContentChangeMonitor:
+    """首页内容变化监控器"""
+
+    def __init__(self):
+        self._content_hashes: Dict[str, str] = {}
+
+    def check(self, url: str, content: Optional[str] = None) -> ContentChangeResult:
+        """检查首页内容是否变化
+
+        Args:
+            url: 网站URL
+            content: 页面内容（None时模拟获取）
+
+        Returns:
+            内容变化结果
+        """
+        # 模拟获取内容
+        if content is None:
+            content = f"simulated-content-{url}-{int(time.time() / 3600)}"
+
+        new_hash = hashlib.md5(content.encode()).hexdigest()
+        old_hash = self._content_hashes.get(url, "")
+
+        if old_hash:
+            changed = new_hash != old_hash
+            # 简单的相似度计算（基于hash）
+            similarity = 1.0 if not changed else self._calculate_similarity(old_hash, new_hash)
+        else:
+            changed = False
+            similarity = 1.0
+
+        self._content_hashes[url] = new_hash
+
+        if changed:
+            message = f"首页内容已变化（相似度: {similarity:.2%}）"
+        else:
+            message = "首页内容无变化"
+
+        return ContentChangeResult(
+            url=url,
+            changed=changed,
+            similarity=similarity,
+            old_hash=old_hash,
+            new_hash=new_hash,
+            message=message,
+        )
+
+    def _calculate_similarity(self, hash1: str, hash2: str) -> float:
+        """计算两个hash的相似度（简化实现）"""
+        if not hash1 or not hash2:
+            return 0.0
+        matching = sum(1 for a, b in zip(hash1, hash2) if a == b)
+        return matching / max(len(hash1), len(hash2))
+
+    def get_stored_hash(self, url: str) -> str:
+        """获取已存储的hash"""
+        return self._content_hashes.get(url, "")
+
+    def reset(self, url: Optional[str] = None) -> None:
+        """重置存储的内容hash"""
+        if url:
+            self._content_hashes.pop(url, None)
+        else:
+            self._content_hashes.clear()
+
+
+class KeywordRankingMonitor:
+    """关键词排名监控器"""
+
+    def __init__(self):
+        self._rankings: Dict[str, List[KeywordRankingResult]] = {}
+
+    def check(self, keyword: str, url: str, search_engine: str = "google") -> KeywordRankingResult:
+        """检查关键词排名
+
+        Args:
+            keyword: 关键词
+            url: 站点URL
+            search_engine: 搜索引擎
+
+        Returns:
+            排名结果
+        """
+        key = f"{search_engine}:{keyword}:{url}"
+        history = self._rankings.get(key, [])
+
+        # 模拟获取排名
+        import random as _random
+        new_position = _random.randint(1, 100)
+
+        previous_position = history[-1].position if history else None
+        change = (previous_position - new_position) if previous_position else 0
+
+        if previous_position:
+            if change > 0:
+                message = f"排名上升 {change} 位（{previous_position} -> {new_position}）"
+            elif change < 0:
+                message = f"排名下降 {abs(change)} 位（{previous_position} -> {new_position}）"
+            else:
+                message = f"排名不变（{new_position}）"
+        else:
+            message = f"首次记录排名：{new_position}"
+
+        result = KeywordRankingResult(
+            keyword=keyword,
+            url=url,
+            position=new_position,
+            previous_position=previous_position,
+            change=change,
+            search_engine=search_engine,
+            message=message,
+        )
+
+        history.append(result)
+        # 只保留最近50条
+        if len(history) > 50:
+            history = history[-50:]
+        self._rankings[key] = history
+
+        return result
+
+    def get_history(self, keyword: str, url: str, search_engine: str = "google") -> List[KeywordRankingResult]:
+        """获取关键词排名历史"""
+        key = f"{search_engine}:{keyword}:{url}"
+        return self._rankings.get(key, []).copy()
+
+
+class BacklinkMonitor:
+    """外链数量监控器"""
+
+    def __init__(self):
+        self._backlinks: Dict[str, List[BacklinkResult]] = {}
+
+    def check(self, url: str) -> BacklinkResult:
+        """检查外链数量
+
+        Args:
+            url: 站点URL
+
+        Returns:
+            外链监控结果
+        """
+        import random as _random
+        history = self._backlinks.get(url, [])
+
+        # 模拟获取外链数
+        new_count = _random.randint(50, 5000)
+        previous_count = history[-1].backlink_count if history else None
+        change = (new_count - previous_count) if previous_count else 0
+
+        if previous_count is not None:
+            if change > 0:
+                message = f"外链增加 {change}（{previous_count} -> {new_count}）"
+            elif change < 0:
+                message = f"外链减少 {abs(change)}（{previous_count} -> {new_count}）"
+            else:
+                message = f"外链数量不变（{new_count}）"
+        else:
+            message = f"首次记录外链数：{new_count}"
+
+        result = BacklinkResult(
+            url=url,
+            backlink_count=new_count,
+            previous_count=previous_count,
+            change=change,
+            referring_domains=_random.randint(10, new_count // 2),
+            message=message,
+        )
+
+        history.append(result)
+        if len(history) > 50:
+            history = history[-50:]
+        self._backlinks[url] = history
+
+        return result
+
+    def get_history(self, url: str) -> List[BacklinkResult]:
+        """获取外链历史"""
+        return self._backlinks.get(url, []).copy()
+
+
+class TrafficMonitor:
+    """流量统计监控器"""
+
+    def __init__(self):
+        self._traffic: Dict[str, List[TrafficResult]] = {}
+
+    def check(self, url: str) -> TrafficResult:
+        """检查流量统计
+
+        Args:
+            url: 站点URL
+
+        Returns:
+            流量统计结果
+        """
+        import random as _random
+        visits = _random.randint(100, 10000)
+        unique_visitors = int(visits * _random.uniform(0.6, 0.9))
+        page_views = int(visits * _random.uniform(1.5, 3.0))
+        bounce_rate = round(_random.uniform(0.2, 0.7), 2)
+        avg_session = round(_random.uniform(60, 600), 2)
+
+        result = TrafficResult(
+            url=url,
+            visits=visits,
+            unique_visitors=unique_visitors,
+            page_views=page_views,
+            bounce_rate=bounce_rate,
+            avg_session_duration=avg_session,
+            message=f"访问量: {visits}, UV: {unique_visitors}, PV: {page_views}",
+        )
+
+        history = self._traffic.get(url, [])
+        history.append(result)
+        if len(history) > 100:
+            history = history[-100:]
+        self._traffic[url] = history
+
+        return result
+
+    def get_history(self, url: str) -> List[TrafficResult]:
+        """获取流量历史"""
+        return self._traffic.get(url, []).copy()
+
+
+# ==================== Webhook告警渠道 ====================
+
+class WebhookAlertSender:
+    """Webhook告警发送器
+
+    支持飞书、钉钉、企业微信等Webhook告警渠道
+    """
+
+    def __init__(self):
+        self._webhooks: Dict[str, str] = {}  # webhook_type -> url
+        self._send_history: List[Dict[str, Any]] = []
+
+    def register_webhook(self, webhook_type: WebhookType, url: str) -> None:
+        """注册Webhook
+
+        Args:
+            webhook_type: Webhook类型
+            url: Webhook URL
+        """
+        self._webhooks[webhook_type.value] = url
+        logger.info(f"已注册Webhook: {webhook_type.value}")
+
+    def remove_webhook(self, webhook_type: WebhookType) -> bool:
+        """移除Webhook"""
+        return self._webhooks.pop(webhook_type.value, None) is not None
+
+    def get_webhook(self, webhook_type: WebhookType) -> Optional[str]:
+        """获取Webhook URL"""
+        return self._webhooks.get(webhook_type.value)
+
+    def format_message(self, webhook_type: WebhookType, alert: Alert) -> Dict[str, Any]:
+        """格式化告警消息
+
+        Args:
+            webhook_type: Webhook类型
+            alert: 告警对象
+
+        Returns:
+            格式化后的消息体
+        """
+        if webhook_type == WebhookType.FEISHU:
+            # 飞书消息格式
+            return {
+                "msg_type": "text",
+                "content": {
+                    "text": f"【{alert.level.value.upper()}】{alert.message}\n目标: {alert.target}\n类型: {alert.monitor_type.value}\n时间: {datetime.datetime.fromtimestamp(alert.created_at).isoformat()}"
+                },
+            }
+        elif webhook_type == WebhookType.DINGTALK:
+            # 钉钉消息格式
+            return {
+                "msgtype": "text",
+                "text": {
+                    "content": f"【{alert.level.value.upper()}】{alert.message}\n目标: {alert.target}\n类型: {alert.monitor_type.value}"
+                },
+            }
+        elif webhook_type == WebhookType.WECOM:
+            # 企业微信消息格式
+            return {
+                "msgtype": "text",
+                "text": {
+                    "content": f"【{alert.level.value.upper()}】{alert.message}\n目标: {alert.target}\n类型: {alert.monitor_type.value}"
+                },
+            }
+        else:
+            # 通用格式
+            return {
+                "level": alert.level.value,
+                "message": alert.message,
+                "target": alert.target,
+                "monitor_type": alert.monitor_type.value,
+                "timestamp": alert.created_at,
+            }
+
+    def send(self, webhook_type: WebhookType, alert: Alert) -> Dict[str, Any]:
+        """发送Webhook告警（模拟实现）
+
+        Args:
+            webhook_type: Webhook类型
+            alert: 告警对象
+
+        Returns:
+            发送结果
+        """
+        url = self._webhooks.get(webhook_type.value)
+        if not url:
+            return {
+                "success": False,
+                "message": f"Webhook {webhook_type.value} 未注册",
+                "error_code": "not_registered",
+            }
+
+        message = self.format_message(webhook_type, alert)
+
+        # 记录发送历史（实际实现应使用 httpx/aiohttp 发送HTTP请求）
+        record = {
+            "webhook_type": webhook_type.value,
+            "url": url,
+            "alert_id": alert.id,
+            "message": message,
+            "sent_at": time.time(),
+            "success": True,
+        }
+        self._send_history.append(record)
+
+        logger.info(f"Webhook告警已发送: {webhook_type.value} -> {alert.target}")
+        return {
+            "success": True,
+            "webhook_type": webhook_type.value,
+            "message": "告警已发送",
+        }
+
+    def send_to_all(self, alert: Alert) -> Dict[str, Dict[str, Any]]:
+        """向所有已注册的Webhook发送告警
+
+        Args:
+            alert: 告警对象
+
+        Returns:
+            各Webhook的发送结果
+        """
+        results = {}
+        for wh_type_str in list(self._webhooks.keys()):
+            wh_type = WebhookType(wh_type_str)
+            results[wh_type.value] = self.send(wh_type, alert)
+        return results
+
+    def get_send_history(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """获取发送历史"""
+        return self._send_history[-limit:]
+
+
+class EmailAlertSender:
+    """邮件告警发送器"""
+
+    def __init__(self, smtp_host: str = "", smtp_port: int = 587,
+                 username: str = "", password: str = "",
+                 from_addr: str = "", to_addrs: Optional[List[str]] = None):
+        self.smtp_host = smtp_host
+        self.smtp_port = smtp_port
+        self.username = username
+        self.password = password
+        self.from_addr = from_addr
+        self.to_addrs = to_addrs or []
+        self._send_history: List[Dict[str, Any]] = []
+
+    def configure(self, smtp_host: str, smtp_port: int, username: str,
+                  password: str, from_addr: str, to_addrs: List[str]) -> None:
+        """配置邮件发送器"""
+        self.smtp_host = smtp_host
+        self.smtp_port = smtp_port
+        self.username = username
+        self.password = password
+        self.from_addr = from_addr
+        self.to_addrs = to_addrs
+
+    def format_email(self, alert: Alert) -> Dict[str, str]:
+        """格式化邮件内容"""
+        subject = f"【{alert.level.value.upper()}】{alert.monitor_type.value}告警 - {alert.target}"
+        body = f"""
+告警级别: {alert.level.value}
+监控类型: {alert.monitor_type.value}
+目标: {alert.target}
+消息: {alert.message}
+时间: {datetime.datetime.fromtimestamp(alert.created_at).isoformat()}
+        """.strip()
+        return {"subject": subject, "body": body}
+
+    def send(self, alert: Alert) -> Dict[str, Any]:
+        """发送邮件告警（模拟实现）
+
+        Args:
+            alert: 告警对象
+
+        Returns:
+            发送结果
+        """
+        if not self.to_addrs:
+            return {
+                "success": False,
+                "message": "收件人未配置",
+                "error_code": "no_recipients",
+            }
+
+        email = self.format_email(alert)
+        record = {
+            "to": self.to_addrs,
+            "subject": email["subject"],
+            "body": email["body"],
+            "alert_id": alert.id,
+            "sent_at": time.time(),
+            "success": True,
+        }
+        self._send_history.append(record)
+
+        logger.info(f"邮件告警已发送: {email['subject']}")
+        return {"success": True, "subject": email["subject"]}
+
+    def get_send_history(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """获取发送历史"""
+        return self._send_history[-limit:]
+
+
+class InAppAlertSender:
+    """站内消息告警发送器"""
+
+    def __init__(self):
+        self._messages: List[Dict[str, Any]] = []
+
+    def send(self, alert: Alert, user_id: Optional[int] = None) -> Dict[str, Any]:
+        """发送站内消息
+
+        Args:
+            alert: 告警对象
+            user_id: 用户ID（None表示广播）
+
+        Returns:
+            发送结果
+        """
+        message = {
+            "id": f"msg_{int(time.time())}_{alert.id[:8]}",
+            "alert_id": alert.id,
+            "user_id": user_id,
+            "title": f"{alert.monitor_type.value}告警",
+            "content": alert.message,
+            "level": alert.level.value,
+            "target": alert.target,
+            "read": False,
+            "created_at": time.time(),
+        }
+        self._messages.append(message)
+        logger.info(f"站内消息已发送: {message['title']}")
+        return {"success": True, "message_id": message["id"]}
+
+    def get_messages(self, user_id: Optional[int] = None, unread_only: bool = False) -> List[Dict[str, Any]]:
+        """获取站内消息"""
+        messages = self._messages
+        if user_id is not None:
+            messages = [m for m in messages if m["user_id"] == user_id or m["user_id"] is None]
+        if unread_only:
+            messages = [m for m in messages if not m["read"]]
+        return messages.copy()
+
+    def mark_as_read(self, message_id: str) -> bool:
+        """标记消息为已读"""
+        for msg in self._messages:
+            if msg["id"] == message_id:
+                msg["read"] = True
+                return True
+        return False
+
+
+# ==================== 告警规则管理 ====================
+
+class AlertRuleManager:
+    """告警规则管理器
+
+    支持阈值配置、连续N次失败才告警、告警静默期、告警升级
+    """
+
+    def __init__(self):
+        self._rules: Dict[str, AlertRule] = {}
+        self._failure_counts: Dict[str, int] = {}  # 连续失败计数
+        self._last_alert_time: Dict[str, float] = {}  # 上次告警时间
+        self._alert_counts: Dict[str, int] = {}  # 告警次数（用于升级）
+
+    def add_rule(self, rule: AlertRule) -> None:
+        """添加告警规则"""
+        self._rules[rule.name] = rule
+        logger.info(f"已添加告警规则: {rule.name}")
+
+    def remove_rule(self, name: str) -> bool:
+        """移除告警规则"""
+        return self._rules.pop(name, None) is not None
+
+    def get_rule(self, name: str) -> Optional[AlertRule]:
+        """获取告警规则"""
+        return self._rules.get(name)
+
+    def get_all_rules(self) -> Dict[str, AlertRule]:
+        """获取所有规则"""
+        return self._rules.copy()
+
+    def evaluate(self, rule_name: str, value: float) -> Dict[str, Any]:
+        """评估告警规则
+
+        Args:
+            rule_name: 规则名称
+            value: 监控值
+
+        Returns:
+            评估结果
+        """
+        rule = self._rules.get(rule_name)
+        if not rule or not rule.enabled:
+            return {"should_alert": False, "reason": "rule_not_found_or_disabled"}
+
+        # 阈值比较
+        threshold_met = self._compare(value, rule.threshold, rule.comparison)
+        if not threshold_met:
+            # 重置连续失败计数
+            self._failure_counts[rule_name] = 0
+            return {"should_alert": False, "reason": "threshold_not_met"}
+
+        # 增加连续失败计数
+        self._failure_counts[rule_name] = self._failure_counts.get(rule_name, 0) + 1
+        current_failures = self._failure_counts[rule_name]
+
+        # 检查是否达到连续失败次数
+        if current_failures < rule.consecutive_failures:
+            return {
+                "should_alert": False,
+                "reason": "insufficient_consecutive_failures",
+                "current_failures": current_failures,
+                "required": rule.consecutive_failures,
+            }
+
+        # 检查告警静默期
+        last_time = self._last_alert_time.get(rule_name, 0)
+        now = time.time()
+        if now - last_time < rule.cooldown_period:
+            return {
+                "should_alert": False,
+                "reason": "in_cooldown",
+                "remaining_cooldown": rule.cooldown_period - (now - last_time),
+            }
+
+        # 检查是否需要升级
+        self._alert_counts[rule_name] = self._alert_counts.get(rule_name, 0) + 1
+        alert_count = self._alert_counts[rule_name]
+
+        escalated = False
+        level = "warning"
+        if rule.escalation_after > 0 and alert_count >= rule.escalation_after:
+            escalated = True
+            level = rule.escalation_level
+
+        self._last_alert_time[rule_name] = now
+
+        return {
+            "should_alert": True,
+            "reason": "threshold_met",
+            "value": value,
+            "threshold": rule.threshold,
+            "consecutive_failures": current_failures,
+            "alert_count": alert_count,
+            "escalated": escalated,
+            "level": level,
+        }
+
+    def _compare(self, value: float, threshold: float, comparison: str) -> bool:
+        """比较值与阈值"""
+        if comparison == ">":
+            return value > threshold
+        elif comparison == "<":
+            return value < threshold
+        elif comparison == ">=":
+            return value >= threshold
+        elif comparison == "<=":
+            return value <= threshold
+        elif comparison == "==":
+            return value == threshold
+        elif comparison == "!=":
+            return value != threshold
+        return False
+
+    def reset_failure_count(self, rule_name: str) -> None:
+        """重置连续失败计数"""
+        self._failure_counts[rule_name] = 0
+
+    def get_failure_count(self, rule_name: str) -> int:
+        """获取连续失败次数"""
+        return self._failure_counts.get(rule_name, 0)
+
+    def get_alert_count(self, rule_name: str) -> int:
+        """获取告警次数"""
+        return self._alert_counts.get(rule_name, 0)
+
+
+# ==================== 趋势图表数据接口 ====================
+
+class TrendChartService:
+    """趋势图表数据服务"""
+
+    def __init__(self):
+        self._data_points: Dict[str, List[Dict[str, Any]]] = {}
+
+    def add_data_point(self, series: str, timestamp: float, value: float,
+                       metadata: Optional[Dict[str, Any]] = None) -> None:
+        """添加数据点
+
+        Args:
+            series: 数据系列名称
+            timestamp: 时间戳
+            value: 值
+            metadata: 元数据
+        """
+        if series not in self._data_points:
+            self._data_points[series] = []
+        self._data_points[series].append({
+            "timestamp": timestamp,
+            "value": value,
+            "metadata": metadata or {},
+        })
+        # 只保留最近1000条
+        if len(self._data_points[series]) > 1000:
+            self._data_points[series] = self._data_points[series][-1000:]
+
+    def get_trend_data(self, series: str, start_time: Optional[float] = None,
+                       end_time: Optional[float] = None) -> List[Dict[str, Any]]:
+        """获取趋势数据
+
+        Args:
+            series: 数据系列
+            start_time: 开始时间
+            end_time: 结束时间
+
+        Returns:
+            数据点列表
+        """
+        data = self._data_points.get(series, [])
+        if start_time:
+            data = [d for d in data if d["timestamp"] >= start_time]
+        if end_time:
+            data = [d for d in data if d["timestamp"] <= end_time]
+        return data.copy()
+
+    def get_chart_data(self, series: str, points: int = 30) -> Dict[str, Any]:
+        """获取图表数据
+
+        Args:
+            series: 数据系列
+            points: 返回的数据点数量
+
+        Returns:
+            图表数据
+        """
+        data = self._data_points.get(series, [])[-points:]
+        return {
+            "series": series,
+            "labels": [datetime.datetime.fromtimestamp(d["timestamp"]).strftime("%Y-%m-%d %H:%M") for d in data],
+            "values": [d["value"] for d in data],
+            "timestamps": [d["timestamp"] for d in data],
+            "point_count": len(data),
+        }
+
+    def get_summary(self, series: str) -> Dict[str, Any]:
+        """获取数据摘要
+
+        Args:
+            series: 数据系列
+
+        Returns:
+            摘要信息
+        """
+        data = self._data_points.get(series, [])
+        if not data:
+            return {
+                "series": series,
+                "count": 0,
+                "min": 0,
+                "max": 0,
+                "avg": 0,
+                "latest": None,
+            }
+        values = [d["value"] for d in data]
+        return {
+            "series": series,
+            "count": len(data),
+            "min": min(values),
+            "max": max(values),
+            "avg": round(sum(values) / len(values), 2),
+            "latest": values[-1],
+        }
+
+    def get_all_series(self) -> List[str]:
+        """获取所有数据系列"""
+        return list(self._data_points.keys())
+
+    def clear_series(self, series: str) -> bool:
+        """清空数据系列"""
+        if series in self._data_points:
+            self._data_points[series] = []
+            return True
+        return False
+
+
+# ==================== 异步监控方法（供Celery定时任务调用） ====================
+
+async def async_check_uptime(url: str, timeout: int = 30) -> MonitorResult:
+    """异步检查站点可用性
+
+    Args:
+        url: 站点URL
+        timeout: 超时时间
+
+    Returns:
+        监控结果
+    """
+    monitor = UptimeMonitor(timeout=timeout)
+    # 在线程池中执行同步的检查
+    result = await asyncio.to_thread(monitor.check, url)
+    return result
+
+
+async def async_check_ssl(hostname: str, port: int = 443) -> MonitorResult:
+    """异步检查SSL证书
+
+    Args:
+        hostname: 主机名
+        port: 端口
+
+    Returns:
+        监控结果
+    """
+    monitor = SSLMonitor(port=port)
+    result = await asyncio.to_thread(monitor.check, hostname)
+    return result
+
+
+async def async_check_site(url: str, config: Optional[MonitorConfig] = None) -> Dict[str, MonitorResult]:
+    """异步检查站点（所有启用的监控）
+
+    Args:
+        url: 站点URL
+        config: 监控配置
+
+    Returns:
+        监控结果字典
+    """
+    service = SiteMonitorService(config=config)
+    result = await asyncio.to_thread(service.check_site, url)
+    return result
+
+
+async def async_check_content_change(url: str, content: Optional[str] = None) -> ContentChangeResult:
+    """异步检查首页内容变化
+
+    Args:
+        url: 站点URL
+        content: 页面内容
+
+    Returns:
+        内容变化结果
+    """
+    monitor = ContentChangeMonitor()
+    result = await asyncio.to_thread(monitor.check, url, content)
+    return result
+
+
+async def async_check_keyword_ranking(keyword: str, url: str,
+                                       search_engine: str = "google") -> KeywordRankingResult:
+    """异步检查关键词排名
+
+    Args:
+        keyword: 关键词
+        url: 站点URL
+        search_engine: 搜索引擎
+
+    Returns:
+        排名结果
+    """
+    monitor = KeywordRankingMonitor()
+    result = await asyncio.to_thread(monitor.check, keyword, url, search_engine)
+    return result
+
+
+async def async_check_backlinks(url: str) -> BacklinkResult:
+    """异步检查外链数量
+
+    Args:
+        url: 站点URL
+
+    Returns:
+        外链结果
+    """
+    monitor = BacklinkMonitor()
+    result = await asyncio.to_thread(monitor.check, url)
+    return result
+
+
+async def async_check_traffic(url: str) -> TrafficResult:
+    """异步检查流量统计
+
+    Args:
+        url: 站点URL
+
+    Returns:
+        流量结果
+    """
+    monitor = TrafficMonitor()
+    result = await asyncio.to_thread(monitor.check, url)
+    return result
+
+
+async def async_send_webhook_alert(webhook_type: WebhookType, alert: Alert,
+                                    sender: Optional[WebhookAlertSender] = None) -> Dict[str, Any]:
+    """异步发送Webhook告警
+
+    Args:
+        webhook_type: Webhook类型
+        alert: 告警对象
+        sender: Webhook发送器
+
+    Returns:
+        发送结果
+    """
+    sender = sender or WebhookAlertSender()
+    result = await asyncio.to_thread(sender.send, webhook_type, alert)
+    return result
+
+
+async def async_monitor_site_full(url: str, config: Optional[MonitorConfig] = None) -> Dict[str, Any]:
+    """异步全面监控站点
+
+    并发执行所有监控项
+
+    Args:
+        url: 站点URL
+        config: 监控配置
+
+    Returns:
+        所有监控结果
+    """
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    hostname = parsed.hostname or ""
+
+    tasks = {}
+    tasks["uptime"] = async_check_uptime(url)
+    if parsed.scheme == "https" and hostname:
+        tasks["ssl"] = async_check_ssl(hostname)
+    tasks["content_change"] = async_check_content_change(url)
+    tasks["backlinks"] = async_check_backlinks(url)
+    tasks["traffic"] = async_check_traffic(url)
+
+    keys = list(tasks.keys())
+    coros = list(tasks.values())
+    done = await asyncio.gather(*coros, return_exceptions=True)
+
+    results = {}
+    for key, result in zip(keys, done):
+        if isinstance(result, Exception):
+            results[key] = {"error": str(result)}
+        else:
+            results[key] = result
+    return results

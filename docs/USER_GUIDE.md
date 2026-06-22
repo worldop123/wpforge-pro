@@ -14,11 +14,42 @@
 
 ## 快速入门
 
+### 系统访问
+
+WPForge 部署后可通过以下地址访问：
+
+| 服务 | 地址 | 说明 |
+|------|------|------|
+| 前端管理面板 | `http://localhost:8080` | Vue 3 管理界面 |
+| 后端 API | `http://localhost:8000` | FastAPI 服务 |
+| API 文档（Swagger） | `http://localhost:8000/api/docs` | 交互式 API 文档 |
+| API 文档（ReDoc） | `http://localhost:8000/api/redoc` | 只读 API 文档 |
+| 健康检查 | `http://localhost:8000/api/health` | 服务健康状态 |
+| Relay Server | `http://localhost:3001` | WebSocket 中转服务 |
+| Flower（任务监控） | `http://localhost:5555` | Celery 任务监控（需启用 monitoring profile） |
+
+> 注意：API 文档路径为 `/api/docs`，不是 `/api/v1/docs`。健康检查路径为 `/api/health`，不是 `/api/v1/health`。
+
 ### 第一次登录
 
-1. 打开浏览器访问 WPForge 管理后台
-2. 使用管理员账号登录
-3. 首次登录后，建议先修改默认密码
+1. 打开浏览器访问 WPForge 管理后台（默认 `http://localhost:8080`）
+2. 使用管理员账号登录（默认用户名 `admin`，密码 `admin123`）
+3. 首次登录后，建议立即修改默认密码
+
+### 验证服务状态
+
+可通过以下方式验证各服务是否正常运行：
+
+```bash
+# 检查后端 API 健康状态
+curl http://localhost:8000/api/health
+
+# 检查 Relay Server
+curl http://localhost:3001/health
+
+# 查看 Docker 容器状态
+docker-compose ps
+```
 
 ### 系统概览
 

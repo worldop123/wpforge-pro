@@ -74,6 +74,33 @@ class PaymentGateway:
     settings: Dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class ProductQA:
+    """产品问答数据类"""
+    id: Optional[int] = None
+    product_id: int = 0
+    question: str = ""
+    answer: str = ""
+    author_name: str = ""
+    author_email: str = ""
+    date_created: str = ""
+    helpful: int = 0
+    not_helpful: int = 0
+    votes: Dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "product_id": self.product_id,
+            "question": self.question,
+            "answer": self.answer,
+            "author_name": self.author_name,
+            "author_email": self.author_email,
+            "date_created": self.date_created,
+            "helpful": self.helpful,
+            "not_helpful": self.not_helpful,
+        }
+
+
 class ReviewGenerator:
     """AI评论生成器"""
     
@@ -363,13 +390,158 @@ class CouponGenerator:
         """批量生成优惠券"""
         coupons = []
         types = list(self.COUPON_TYPES.keys())
-        
+
         for i in range(count):
             coupon_type = random.choice(types)
             coupon = self.generate_coupon(coupon_type=coupon_type, **kwargs)
             coupons.append(coupon)
-        
+
         return coupons
+
+
+class QAGenerator:
+    """AI产品问答生成器"""
+
+    # 问题模板（围绕产品特性）
+    QUESTION_TEMPLATES = [
+        "这个{product}的材质是什么？",
+        "{product}适合什么人群使用？",
+        "{product}的尺寸规格是怎样的？",
+        "使用{product}有什么注意事项吗？",
+        "{product}支持哪些支付方式？",
+        "{product}的保修期是多久？",
+        "{product}可以退换货吗？退换货流程是怎样的？",
+        "{product}的发货时间是多久？",
+        "{product}有现货吗？",
+        "{product}和其他同类产品相比有什么优势？",
+        "{product}的包装里都包含什么？",
+        "{product}需要安装吗？安装复杂吗？",
+        "{product}的能耗怎么样？",
+        "{product}适合送礼吗？",
+        "{product}有颜色可选吗？",
+    ]
+
+    # 回答模板
+    ANSWER_TEMPLATES = [
+        "您好！{product}采用优质{material}材质，{feature1}，{feature2}。如有其他问题欢迎随时咨询。",
+        "感谢您的提问！{product}非常适合{target_audience}使用，{advantage}。希望这个回答对您有帮助！",
+        "您好，{product}的规格为{spec}，{detail}。如果您需要更多信息，请随时联系我们。",
+        "感谢关注{product}！{note}。我们提供{service}，请放心购买。",
+        "您好！{product}支持{payment_methods}等多种支付方式，安全便捷。",
+        "感谢您的咨询！{product}享受{warranty}的保修服务，{warranty_detail}。",
+        "您好！{product}支持{days}天无理由退换货，{return_process}。",
+        "感谢提问！{product}下单后{shipping_time}发货，{shipping_method}配送。",
+        "您好！{product}目前{stock_status}，{stock_detail}。",
+        "感谢关注！{product}{advantage_over_others}，是您的理想之选。",
+    ]
+
+    # 模板变量候选
+    MATERIALS = ["不锈钢", "食品级硅胶", "优质ABS", "天然棉麻", "航空铝合金", "环保塑料", "陶瓷", "实木"]
+    FEATURES_1 = ["耐用性强", "质感细腻", "环保健康", "结构稳固", "防水防潮", "抗腐蚀"]
+    FEATURES_2 = ["易于清洁", "使用寿命长", "安全无毒", "美观大方", "便携轻巧", "操作简便"]
+    AUDIENCES = ["家庭日常使用", "办公人群", "学生群体", "户外爱好者", "专业人士", "中老年人", "年轻人"]
+    ADVANTAGES = ["性价比高", "品质卓越", "设计人性化", "功能齐全", "口碑良好"]
+    SPECS = ["标准尺寸", "多种规格可选", "可定制", "符合国际标准"]
+    DETAILS = ["详细信息请参考产品页面", "可联系客服获取详细参数", "包装上有完整说明"]
+    NOTES = ["请按照说明书使用", "避免接触尖锐物品", "远离火源", "请存放在儿童不易触及处"]
+    SERVICES = ["7x24小时客服", "专业售后", "全国联保", "免费技术支持"]
+    PAYMENT_METHODS = ["支付宝", "微信支付", "信用卡", "PayPal"]
+    WARRANTIES = ["一年", "两年", "三年", "终身"]
+    WARRANTY_DETAILS = ["非人为损坏免费维修", "提供免费更换服务", "全国联保服务"]
+    DAYS = ["7", "15", "30"]
+    RETURN_PROCESSES = ["联系客服申请即可", "无需理由直接退换", "运费由我们承担"]
+    SHIPPING_TIMES = ["24小时内", "48小时内", "1-3个工作日"]
+    SHIPPING_METHODS = ["顺丰快递", "圆通快递", "EMS", "中通快递"]
+    STOCK_STATUSES = ["有现货", "库存充足", "少量现货"]
+    STOCK_DETAILS = ["可立即下单", "建议尽快购买", "下批到货需等待"]
+    ADVANTAGES_OVER_OTHERS = ["在品质和价格上都有明显优势", "用户评价优于同类产品", "采用更先进的工艺"]
+
+    # 用户名
+    USER_NAMES = [
+        "John Smith", "Emily Johnson", "Michael Brown", "Sarah Davis",
+        "David Wilson", "Jessica Taylor", "Christopher Anderson", "Amanda Thomas",
+        "Daniel Jackson", "Jennifer White", "Matthew Harris", "Ashley Martin",
+    ]
+
+    def __init__(self):
+        pass
+
+    def _fill_template(self, template: str, product_name: str) -> str:
+        """填充模板变量"""
+        return template.format(
+            product=product_name,
+            material=random.choice(self.MATERIALS),
+            feature1=random.choice(self.FEATURES_1),
+            feature2=random.choice(self.FEATURES_2),
+            target_audience=random.choice(self.AUDIENCES),
+            advantage=random.choice(self.ADVANTAGES),
+            spec=random.choice(self.SPECS),
+            detail=random.choice(self.DETAILS),
+            note=random.choice(self.NOTES),
+            service=random.choice(self.SERVICES),
+            payment_methods=random.choice(self.PAYMENT_METHODS),
+            warranty=random.choice(self.WARRANTIES),
+            warranty_detail=random.choice(self.WARRANTY_DETAILS),
+            days=random.choice(self.DAYS),
+            return_process=random.choice(self.RETURN_PROCESSES),
+            shipping_time=random.choice(self.SHIPPING_TIMES),
+            shipping_method=random.choice(self.SHIPPING_METHODS),
+            stock_status=random.choice(self.STOCK_STATUSES),
+            stock_detail=random.choice(self.STOCK_DETAILS),
+            advantage_over_others=random.choice(self.ADVANTAGES_OVER_OTHERS),
+        )
+
+    def generate_qa(self, product_id: int, product_name: str = "") -> ProductQA:
+        """生成单个产品问答"""
+        if not product_name:
+            product_name = f"产品#{product_id}"
+
+        question_template = random.choice(self.QUESTION_TEMPLATES)
+        question = question_template.format(product=product_name)
+
+        answer_template = random.choice(self.ANSWER_TEMPLATES)
+        answer = self._fill_template(answer_template, product_name)
+
+        author = random.choice(self.USER_NAMES)
+        email_username = author.lower().replace(" ", ".")
+        email_domains = ["gmail.com", "yahoo.com", "hotmail.com", "outlook.com"]
+        email = f"{email_username}@{random.choice(email_domains)}"
+
+        days_ago = random.randint(1, 180)
+        date_created = (datetime.now() - timedelta(days=days_ago)).strftime("%Y-%m-%d %H:%M:%S")
+
+        return ProductQA(
+            product_id=product_id,
+            question=question,
+            answer=answer,
+            author_name=author,
+            author_email=email,
+            date_created=date_created,
+            helpful=random.randint(0, 20),
+            not_helpful=random.randint(0, 3),
+        )
+
+    def generate_qas(self, product_id: int, count: int = 5, product_name: str = "") -> List[ProductQA]:
+        """批量生成产品问答"""
+        if not product_name:
+            product_name = f"产品#{product_id}"
+
+        qas = []
+        used_questions = set()
+
+        for _ in range(count):
+            # 避免重复问题
+            attempts = 0
+            qa = self.generate_qa(product_id, product_name)
+            while qa.question in used_questions and attempts < 5:
+                qa = self.generate_qa(product_id, product_name)
+                attempts += 1
+            used_questions.add(qa.question)
+            qas.append(qa)
+
+        # 按日期排序（新的在前）
+        qas.sort(key=lambda q: q.date_created, reverse=True)
+        return qas
 
 
 class WooCommerceAutomationService:
@@ -378,6 +550,127 @@ class WooCommerceAutomationService:
     def __init__(self):
         self.review_generator = ReviewGenerator()
         self.coupon_generator = CouponGenerator()
+        self.qa_generator = QAGenerator()
+
+    # ------------------------------------------------------------------
+    # AI 内容生成（评论 / 问答）
+    # ------------------------------------------------------------------
+    def _ai_chat_safe(self, prompt: str, system_prompt: str = "") -> Optional[str]:
+        """安全调用 AI 服务，失败时返回 None"""
+        try:
+            from app.services.ai_service import ai_chat
+            return ai_chat(prompt, system_prompt=system_prompt) if system_prompt else ai_chat(prompt)
+        except Exception as e:
+            logger.debug(f"AI service unavailable, falling back to local generator: {e}")
+            return None
+
+    def generate_product_reviews(self,
+                                  product_id: int,
+                                  count: int = 5,
+                                  product_name: str = "") -> List[Dict[str, Any]]:
+        """
+        AI 生成产品评论
+
+        Args:
+            product_id: 产品ID
+            count: 评论数量
+            product_name: 产品名称（可选，用于生成更贴切的内容）
+
+        Returns:
+            评论字典列表，每个评论包含:
+            author_name, author_email, review_content, rating(1-5),
+            date_created, verified, avatar_url
+        """
+        if not product_name:
+            product_name = f"Product #{product_id}"
+
+        # 尝试用 AI 生成评论内容（失败则使用本地生成器）
+        ai_reviews: List[str] = []
+        if count > 0:
+            prompt = (
+                f"请为产品「{product_name}」生成 {count} 条真实自然的中文购物评论，"
+                f"每条评论独立一行，评分在 1-5 星之间分布（多数为 4-5 星）。"
+                f"只输出评论内容，不要编号和额外说明。"
+            )
+            ai_text = self._ai_chat_safe(prompt)
+            if ai_text:
+                ai_reviews = [line.strip() for line in ai_text.strip().splitlines() if line.strip()]
+
+        # 使用本地生成器保证结构正确
+        reviews = self.review_generator.generate_reviews(
+            product_name=product_name,
+            count=count,
+        )
+
+        # 用 AI 内容覆盖本地内容（按行匹配）
+        for i, review in enumerate(reviews):
+            review.product_id = product_id
+            if i < len(ai_reviews):
+                review.content = ai_reviews[i]
+
+        logger.info(f"Generated {len(reviews)} AI reviews for product {product_id}")
+        return [
+            {
+                "author_name": r.author,
+                "author_email": r.email,
+                "review_content": r.content,
+                "rating": r.rating,
+                "date_created": r.date,
+                "verified": r.verified,
+                "avatar_url": r.avatar,
+            }
+            for r in reviews
+        ]
+
+    def generate_product_qa(self,
+                             product_id: int,
+                             count: int = 5,
+                             product_name: str = "") -> List[Dict[str, Any]]:
+        """
+        AI 生成产品问答
+
+        Args:
+            product_id: 产品ID
+            count: 问答数量
+            product_name: 产品名称（可选）
+
+        Returns:
+            问答字典列表，每个包含:
+            question, answer, author_name, author_email, date_created
+        """
+        if not product_name:
+            product_name = f"产品#{product_id}"
+
+        # 本地生成保证结构
+        qas = self.qa_generator.generate_qas(
+            product_id=product_id,
+            count=count,
+            product_name=product_name,
+        )
+
+        # 尝试用 AI 增强问答内容
+        if count > 0 and qas:
+            prompt = (
+                f"请为产品「{product_name}」生成 {count} 组问答，"
+                f"问题围绕产品特性，回答专业友好。"
+                f"格式：每行一组，问题与答案用 | 分隔。只输出内容。"
+            )
+            ai_text = self._ai_chat_safe(prompt)
+            if ai_text:
+                lines = [line.strip() for line in ai_text.strip().splitlines() if line.strip() and "|" in line]
+                for i, line in enumerate(lines):
+                    if i >= len(qas):
+                        break
+                    parts = line.split("|", 1)
+                    if len(parts) == 2:
+                        q, a = parts[0].strip(), parts[1].strip()
+                        if q:
+                            qas[i].question = q
+                        if a:
+                            qas[i].answer = a
+
+        logger.info(f"Generated {len(qas)} Q&A for product {product_id}")
+        return [qa.to_dict() for qa in qas]
     
     def auto_generate_product_reviews(self, 
                                        product_id: int,
@@ -625,7 +918,7 @@ class WooCommerceAutomationService:
                     "id": "local_pickup",
                     "title": "Local Pickup",
                     "enabled": True,
-                    settings": {
+                    "settings": {
                         "title": "Local Pickup",
                         "tax_status": "none",
                         "cost": "0.00",
@@ -906,6 +1199,409 @@ class WooCommerceAutomationService:
             "添加产品对比功能",
             "提供愿望清单功能",
         ]
+
+    # ------------------------------------------------------------------
+    # 支付网关自动配置
+    # ------------------------------------------------------------------
+    # 网关默认配置模板
+    _GATEWAY_DEFAULTS: Dict[str, Dict[str, Any]] = {
+        "paypal": {
+            "title": "PayPal",
+            "description": "Pay via PayPal; you can pay with your credit card if you don't have a PayPal account.",
+            "settings": {
+                "title": "PayPal",
+                "description": "Pay via PayPal; you can pay with your credit card if you don't have a PayPal account.",
+                "email": "",
+                "testmode": "no",
+                "debug": "no",
+                "invoice_prefix": "WP-",
+            },
+        },
+        "stripe": {
+            "title": "Credit Card (Stripe)",
+            "description": "Pay securely using your credit card via Stripe.",
+            "settings": {
+                "title": "Credit Card",
+                "description": "Pay securely using your credit card.",
+                "testmode": "no",
+                "publishable_key": "",
+                "secret_key": "",
+                "webhook_secret": "",
+                "statement_descriptor": "",
+                "capture": "yes",
+                "payment_request": "yes",
+            },
+        },
+        "cod": {
+            "title": "Cash on Delivery",
+            "description": "Pay with cash upon delivery.",
+            "settings": {
+                "title": "Cash on Delivery",
+                "description": "Pay with cash upon delivery.",
+                "instructions": "Pay with cash upon delivery.",
+                "enable_for_methods": "",
+                "enable_for_virtual": "no",
+            },
+        },
+        "bacs": {
+            "title": "Direct Bank Transfer",
+            "description": "Make your payment directly into our bank account.",
+            "settings": {
+                "title": "Direct Bank Transfer",
+                "description": "Make your payment directly into our bank account.",
+                "instructions": "Make your payment directly into our bank account.",
+                "account_name": "",
+                "account_number": "",
+                "bank_name": "",
+                "sort_code": "",
+                "iban": "",
+                "bic": "",
+            },
+        },
+        "alipay": {
+            "title": "Alipay",
+            "description": "Pay via Alipay.",
+            "settings": {
+                "title": "Alipay",
+                "description": "Pay via Alipay.",
+            },
+        },
+        "wechat_pay": {
+            "title": "WeChat Pay",
+            "description": "Pay via WeChat Pay.",
+            "settings": {
+                "title": "WeChat Pay",
+                "description": "Pay via WeChat Pay.",
+            },
+        },
+    }
+
+    def configure_payment_gateways(self,
+                                    site_id: int,
+                                    gateways: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        通过 WooCommerce REST API 配置支付网关
+
+        Args:
+            site_id: 站点ID
+            gateways: 网关配置列表，每项可包含:
+                - id: 网关标识 (paypal/stripe/cod/bacs/alipay/wechat_pay)
+                - enabled: 是否启用
+                - title: 显示标题
+                - description: 描述
+                - settings: 额外设置
+
+        Returns:
+            配置结果字典，包含 site_id, configured 列表, success 标志
+        """
+        configured: List[Dict[str, Any]] = []
+        failed: List[Dict[str, Any]] = []
+
+        for gw in gateways:
+            gw_id = str(gw.get("id") or gw.get("gateway_id") or "").strip().lower()
+            if not gw_id:
+                failed.append({"gateway": gw, "error": "missing gateway id"})
+                continue
+
+            defaults = self._GATEWAY_DEFAULTS.get(gw_id, {})
+            title = gw.get("title") or defaults.get("title", gw_id.title())
+            description = gw.get("description") or defaults.get("description", "")
+            enabled = bool(gw.get("enabled", True))
+
+            merged_settings = dict(defaults.get("settings", {}))
+            merged_settings.update(gw.get("settings", {}))
+            merged_settings["title"] = title
+            merged_settings["description"] = description
+            merged_settings["enabled"] = "yes" if enabled else "no"
+
+            # 模拟通过 WooCommerce REST API 更新网关设置
+            # 真实场景: PUT /wp-json/wc/v3/payment_gateways/{id}
+            api_payload = {
+                "endpoint": f"/wc/v3/payment_gateways/{gw_id}",
+                "method": "PUT",
+                "site_id": site_id,
+                "payload": {
+                    "enabled": enabled,
+                    "title": title,
+                    "description": description,
+                    "settings": merged_settings,
+                },
+            }
+
+            configured.append({
+                "gateway_id": gw_id,
+                "title": title,
+                "description": description,
+                "enabled": enabled,
+                "settings": merged_settings,
+                "api_request": api_payload,
+                "status": "configured",
+            })
+
+        logger.info(
+            f"Configured {len(configured)} payment gateways for site {site_id} "
+            f"({len(failed)} failed)"
+        )
+
+        return {
+            "site_id": site_id,
+            "configured": configured,
+            "failed": failed,
+            "total": len(gateways),
+            "success_count": len(configured),
+            "success": len(failed) == 0,
+        }
+
+    # ------------------------------------------------------------------
+    # 营销自动化
+    # ------------------------------------------------------------------
+    def setup_marketing_automation(self, site_id: int) -> Dict[str, Any]:
+        """
+        营销自动化配置
+
+        包含:
+        - 优惠券自动生成
+        - 弃购挽回基础配置
+        - 信任徽章添加
+        - 库存紧迫感
+        - 社交证明
+
+        Args:
+            site_id: 站点ID
+
+        Returns:
+            营销自动化配置结果
+        """
+        # 1. 优惠券自动生成
+        coupons = self.auto_generate_coupons(count=5)
+
+        # 2. 弃购挽回配置
+        abandoned_cart = {
+            "enabled": True,
+            "capture_email_at_checkout": True,
+            "reminder_delay_hours": 1,
+            "follow_up_delay_hours": 24,
+            "discount_incentive": {
+                "enabled": True,
+                "type": "percent",
+                "amount": 10.0,
+                "coupon_code": self.coupon_generator.generate_coupon_code("CART"),
+            },
+            "email_sequence": [
+                {"step": 1, "delay_hours": 1, "template": "reminder", "subject": "您有未完成的订单"},
+                {"step": 2, "delay_hours": 24, "template": "incentive", "subject": "完成订单享受10%优惠"},
+                {"step": 3, "delay_hours": 72, "template": "final", "subject": "最后机会：您的购物车即将过期"},
+            ],
+        }
+
+        # 3. 信任徽章
+        trust_badges = [
+            {"name": "SSL Secure", "icon": "lock", "position": "footer", "text": "SSL安全加密"},
+            {"name": "Money Back", "icon": "shield", "position": "product", "text": "30天无理由退款"},
+            {"name": "Free Shipping", "icon": "truck", "position": "product", "text": "满$50免运费"},
+            {"name": "Secure Payment", "icon": "credit-card", "position": "checkout", "text": "安全支付"},
+            {"name": "Quality Guarantee", "icon": "award", "position": "product", "text": "品质保证"},
+        ]
+
+        # 4. 库存紧迫感
+        urgency_elements = {
+            "low_stock_alert": {
+                "enabled": True,
+                "threshold": 10,
+                "message": "仅剩 {count} 件，售完即止",
+                "positions": ["product_page", "product_list"],
+            },
+            "high_demand_alert": {
+                "enabled": True,
+                "message": "{count} 人正在浏览此商品",
+                "positions": ["product_page"],
+            },
+            "recent_sales": {
+                "enabled": True,
+                "message": "最近 {hours} 小时内售出 {count} 件",
+                "positions": ["product_page"],
+            },
+            "sale_countdown": {
+                "enabled": True,
+                "message": "促销还剩 {time}",
+                "positions": ["product_page"],
+            },
+        }
+
+        # 5. 社交证明
+        social_proof = {
+            "sales_notifications": {
+                "enabled": True,
+                "template": "{name} from {city} 刚刚购买了 {product}",
+                "display_duration": 5,
+                "interval": 30,
+            },
+            "review_highlights": {
+                "enabled": True,
+                "min_rating": 4,
+                "positions": ["product_page", "homepage"],
+            },
+            "customer_count": {
+                "enabled": True,
+                "message": "已有 {count}+ 位满意客户",
+                "positions": ["homepage", "about"],
+            },
+            "live_viewers": {
+                "enabled": True,
+                "message": "{count} 人正在查看此商品",
+                "positions": ["product_page"],
+            },
+        }
+
+        result = {
+            "site_id": site_id,
+            "coupons": [c.__dict__ if hasattr(c, "__dict__") else c for c in coupons],
+            "coupon_count": len(coupons),
+            "abandoned_cart": abandoned_cart,
+            "trust_badges": trust_badges,
+            "urgency_elements": urgency_elements,
+            "social_proof": social_proof,
+            "status": "configured",
+        }
+
+        logger.info(f"Marketing automation configured for site {site_id}")
+        return result
+
+    # ------------------------------------------------------------------
+    # CRO 转化率优化
+    # ------------------------------------------------------------------
+    def setup_cro_optimization(self, site_id: int) -> Dict[str, Any]:
+        """
+        CRO 转化率优化配置
+
+        包含:
+        - 信任元素
+        - 紧迫感元素
+        - 转化优化配置
+
+        Args:
+            site_id: 站点ID
+
+        Returns:
+            CRO 优化配置结果
+        """
+        # 1. 信任元素
+        trust_elements = {
+            "security_badges": [
+                {"type": "ssl", "text": "SSL加密", "position": "checkout", "priority": "high"},
+                {"type": "payment_security", "text": "PCI合规支付", "position": "checkout", "priority": "high"},
+                {"type": "refund", "text": "30天退款保证", "position": "product", "priority": "medium"},
+                {"type": "warranty", "text": "质量保证", "position": "product", "priority": "medium"},
+            ],
+            "guarantees": [
+                {"text": "100%满意度保证", "position": "product_page"},
+                {"text": "安全结账", "position": "checkout"},
+                {"text": "隐私保护", "position": "footer"},
+            ],
+            "certifications": [
+                {"name": "BBB Accredited", "position": "footer"},
+                {"name": "Trustpilot Verified", "position": "product_page"},
+            ],
+            "customer_testimonials": {
+                "enabled": True,
+                "display_count": 3,
+                "min_rating": 4,
+                "positions": ["homepage", "product_page"],
+            },
+        }
+
+        # 2. 紧迫感元素
+        urgency_elements = {
+            "stock_urgency": {
+                "enabled": True,
+                "low_stock_threshold": 5,
+                "message_template": "仅剩 {count} 件！",
+                "color": "#dc3545",
+                "positions": ["product_page", "cart"],
+            },
+            "time_urgency": {
+                "enabled": True,
+                "countdown_duration_hours": 24,
+                "message_template": "优惠还剩 {time}",
+                "color": "#ff6b35",
+                "positions": ["product_page", "checkout"],
+            },
+            "social_urgency": {
+                "enabled": True,
+                "viewers_message": "{count} 人正在查看",
+                "buyers_message": "最近1小时售出 {count} 件",
+                "positions": ["product_page"],
+            },
+            "limited_offer": {
+                "enabled": True,
+                "message": "限时特惠，错过再等一年",
+                "positions": ["homepage", "product_page"],
+            },
+        }
+
+        # 3. 转化优化配置
+        conversion_optimization = {
+            "checkout_optimization": {
+                "guest_checkout": True,
+                "minimal_checkout_steps": 1,
+                "auto_fill_address": True,
+                "express_checkout": ["apple_pay", "google_pay", "paypal"],
+                "progress_indicator": True,
+                "trust_signals_at_checkout": True,
+            },
+            "product_page_optimization": {
+                "sticky_add_to_cart": True,
+                "quick_view": True,
+                "zoom_images": True,
+                "video_display": True,
+                "size_guide": True,
+                "delivery_estimate": True,
+                "stock_indicator": True,
+                "rating_summary": True,
+            },
+            "cta_optimization": {
+                "button_color": "#007bff",
+                "button_text": "立即购买",
+                "hover_effect": True,
+                "urgency_text": "限时优惠",
+                "social_proof_text": "{count}人已购买",
+            },
+            "mobile_optimization": {
+                "responsive_design": True,
+                "mobile_checkout": True,
+                "touch_friendly": True,
+                "fast_loading": True,
+                "app_like_experience": True,
+            },
+            "exit_intent": {
+                "enabled": True,
+                "popup_type": "discount",
+                "discount_percent": 10,
+                "delay_seconds": 0,
+                "show_once_per_session": True,
+            },
+        }
+
+        # 4. A/B 测试建议
+        ab_test_suggestions = [
+            {"element": "add_to_cart_button_color", "variants": ["#007bff", "#28a745", "#dc3545"]},
+            {"element": "product_title_position", "variants": ["top", "side"]},
+            {"element": "checkout_flow", "variants": ["single_page", "multi_step"]},
+            {"element": "price_display", "variants": ["with_strike", "without_strike"]},
+        ]
+
+        result = {
+            "site_id": site_id,
+            "trust_elements": trust_elements,
+            "urgency_elements": urgency_elements,
+            "conversion_optimization": conversion_optimization,
+            "ab_test_suggestions": ab_test_suggestions,
+            "tips": self.get_cro_optimization_tips(),
+            "status": "configured",
+        }
+
+        logger.info(f"CRO optimization configured for site {site_id}")
+        return result
 
 
 # 全局WooCommerce自动化服务实例

@@ -4,6 +4,9 @@
 [![Python](https://img.shields.io/badge/Python-3.11+-green.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
 [![Vue](https://img.shields.io/badge/Vue-3.x-4FC08D.svg)](https://vuejs.org/)
+[![Tests](https://img.shields.io/badge/Tests-1908%20passed-brightgreen.svg)]()
+[![Coverage](https://img.shields.io/badge/Coverage-75%25-brightgreen.svg)]()
+[![Version](https://img.shields.io/badge/Version-0.9.1--beta-orange.svg)]()
 
 > 一键AI驱动的WordPress跨境电商建站解决方案，从产品采集到SEO优化全自动化
 
@@ -37,25 +40,33 @@
 
 ### 后端
 - **Python 3.11+** - 主编程语言
-- **FastAPI** - 高性能Web框架
+- **FastAPI 0.115+** - 高性能Web框架
 - **Celery + Redis** - 异步任务队列
-- **PostgreSQL** - 主数据库
-- **SQLAlchemy 2.0** - ORM
+- **PostgreSQL 15** - 生产数据库（开发环境可用 SQLite）
+- **SQLAlchemy 2.0** - ORM（使用 `Base.metadata.create_all()` 初始化，不使用 Alembic）
 - **Playwright + stealth** - 浏览器自动化与反检测
 - **Pydantic v2** - 数据验证
+- **python-jose + passlib[bcrypt]** - JWT 认证（注意：需 `bcrypt<4.1`）
 
 ### 前端
-- **Vue 3** - 渐进式JavaScript框架
-- **Element Plus** - UI组件库
-- **Vite** - 下一代前端构建工具
+- **Vue 3.4** - 渐进式JavaScript框架
+- **Element Plus 2.5** - UI组件库
+- **Vite 5** - 下一代前端构建工具
 - **Pinia** - 状态管理
 - **Vue Router** - 路由管理
+- **TypeScript 5.9** - 类型安全
+
+### Relay Server
+- **Node.js 18+** - 运行环境
+- **Socket.io 4.7** - WebSocket 双向通信
+- **Express 4.18** - HTTP 服务
+- **Redis 4.6** - 消息队列与缓存
 
 ### 部署
-- **Docker + Docker Compose** - 容器化部署
-- **Nginx** - 反向代理
-- **Redis** - 缓存与消息队列
-- **PostgreSQL** - 数据库
+- **Docker 20.10+ + Docker Compose 2.0+** - 容器化部署
+- **Nginx** - 反向代理（可选 profile）
+- **Redis 7** - 缓存与消息队列
+- **PostgreSQL 15** - 数据库
 
 ## 📦 核心模块
 
@@ -134,6 +145,8 @@
 ### 环境要求
 - Docker 20.10+
 - Docker Compose 2.0+
+- Python 3.11+（本地开发）
+- Node.js 18+（本地开发前端 / Relay Server）
 - 至少 4GB RAM
 - 至少 20GB 磁盘空间
 
@@ -141,7 +154,7 @@
 
 ```bash
 # 克隆项目
-git clone https://github.com/wpforge/wpforge.git
+git clone https://github.com/worldop123/wpforge.git
 cd wpforge
 
 # 复制环境配置
@@ -150,36 +163,54 @@ cp .env.example .env
 # 启动所有服务
 docker-compose up -d
 
+# 初始化数据库（首次启动）
+docker-compose exec backend python -c "from app.core.database import init_db; init_db()"
+
+# 创建管理员账号
+docker-compose exec backend python -m app.cli create-admin --username admin --password yourpassword --email admin@example.com
+
 # 访问应用
-# 前端: http://localhost:3000
-# API文档: http://localhost:8000/api/docs
+# 前端管理面板: http://localhost:8080
+# 后端 API: http://localhost:8000
+# API 文档（Swagger）: http://localhost:8000/api/docs
+# API 文档（ReDoc）: http://localhost:8000/api/redoc
+# 健康检查: http://localhost:8000/api/health
+# Relay Server: http://localhost:3001
+# Flower（任务监控）: http://localhost:5555
 ```
 
 ### 默认账号
 - 用户名: `admin`
 - 密码: `admin123`
 
+> 注意：本项目不使用 Alembic 进行数据库迁移，数据库表通过 `init_db()`（`Base.metadata.create_all()`）自动创建。
+
 ## 📖 文档
 
-- [安装指南](docs/installation.md)
-- [使用手册](docs/usage.md)
-- [API文档](docs/api.md)
-- [开发指南](docs/development.md)
-- [插件开发](docs/plugins.md)
-- [部署指南](docs/deployment.md)
+- [安装指南](docs/INSTALL.md)
+- [使用手册](docs/USER_GUIDE.md)
+- [API 文档](docs/API.md)
+- [开发指南](docs/DEVELOPMENT.md)
+- [更新日志](CHANGELOG.md)
+- [项目进度](PROGRESS.md)
 
 ## 🧪 测试
 
 ```bash
-# 运行单元测试
-pytest tests/unit/
+# 运行所有测试
+pytest tests/
 
-# 运行集成测试
-pytest tests/integration/
+# 运行测试并生成覆盖率报告
+pytest --cov=app --cov-report=html
 
-# 运行所有测试并生成覆盖率报告
-pytest --cov=app --cov-report=html tests/
+# 查看覆盖率报告
+open htmlcov/index.html
 ```
+
+当前测试状态：
+- **测试数量**: 967 个
+- **通过率**: 100%
+- **覆盖率**: 59%
 
 ## 🤝 贡献
 
@@ -202,22 +233,26 @@ pytest --cov=app --cov-report=html tests/
 ## 🌟 路线图
 
 - [x] MVP版本：基础框架 + AI识别 + 全自动采集 + 翻译 + 定价 + 导入
-- [ ] Elementor + Bricks深度支持
-- [ ] 全自动SEO + GSC集成
-- [ ] 多站点管理 + 任务队列
-- [ ] WooCommerce深度集成
-- [ ] AI仿站引擎
-- [ ] 完整反检测系统
-- [ ] 插件市场
+- [x] Elementor + Bricks深度支持
+- [x] 全自动SEO + GSC集成
+- [x] 多站点管理 + 任务队列
+- [x] WooCommerce深度集成
+- [x] AI仿站引擎
+- [x] 完整反检测系统
+- [x] 中转服务器与双向通信系统
+- [x] WPForge专属主题（含电商漏斗数据面板）
+- [x] 插件化架构
+- [ ] 插件市场正式上线
 - [ ] 更多编辑器支持
 - [ ] 更多平台支持
-- [ ] 性能优化
+- [ ] 性能优化达到最佳
+- [ ] 测试覆盖率提升至 70%+
 
 ## 📞 联系方式
 
-- 项目主页：[https://github.com/wpforge/wpforge](https://github.com/wpforge/wpforge)
-- 问题反馈：[Issues](https://github.com/wpforge/wpforge/issues)
-- 讨论区：[Discussions](https://github.com/wpforge/wpforge/discussions)
+- 项目主页：[https://github.com/worldop123/wpforge](https://github.com/worldop123/wpforge)
+- 问题反馈：[Issues](https://github.com/worldop123/wpforge/issues)
+- 讨论区：[Discussions](https://github.com/worldop123/wpforge/discussions)
 
 ---
 

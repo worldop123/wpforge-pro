@@ -1,278 +1,405 @@
 """
-价格引擎测试
+价格服务测试 - 测试 PriceCalculator、PriceOptimizer、ExchangeRateService
 """
 import pytest
+from unittest.mock import MagicMock, AsyncMock, patch
+
 from app.services.price_service import (
-    PriceService,
-    PricingStrategy,
-    get_price_service,
+    PriceStrategy,
+    ExchangeRate,
+    ExchangeRateProvider,
+    DefaultExchangeRateProvider,
+    ExchangeRateService,
+    PriceCalculator,
+    PriceOptimizer,
+    exchange_rate_service,
+    price_calculator,
+    price_optimizer,
 )
 
 
-class TestPricingStrategy:
-    """定价策略枚举测试"""
+class TestPriceStrategy:
+    """PriceStrategy 枚举测试"""
 
     def test_strategy_values(self):
-        """测试策略值"""
-        assert hasattr(PricingStrategy, 'COST_PLUS')
-        assert hasattr(PricingStrategy, 'COMPETITOR_BASED')
-        assert hasattr(PricingStrategy, 'VALUE_BASED')
-        assert hasattr(PricingStrategy, 'DYNAMIC')
-        assert hasattr(PricingStrategy, 'PSYCHOLOGICAL')
+        assert PriceStrategy.FIXED_MARKUP.value == "fixed_markup"
+        assert PriceStrategy.PERCENTAGE_MARKUP.value == "percentage_markup"
+        assert PriceStrategy.TIERED_PRICING.value == "tiered_pricing"
+        assert PriceStrategy.COMPETITIVE_PRICING.value == "competitive_pricing"
+        assert PriceStrategy.PSYCHOLOGICAL_PRICING.value == "psychological_pricing"
 
     def test_strategy_count(self):
-        """测试策略数量"""
-        assert len(PricingStrategy) >= 5
+        assert len(PriceStrategy) == 5
 
 
-class TestPriceService:
-    """价格服务测试"""
+class TestExchangeRate:
+    """ExchangeRate 数据类测试"""
 
-    def test_service_creation(self):
-        """测试服务创建"""
-        service = PriceService()
-        assert service is not None
+    def test_defaults(self):
+        rate = ExchangeRate(base_currency="USD", target_currency="CNY", rate=7.24)
+        assert rate.base_currency == "USD"
+        assert rate.target_currency == "CNY"
+        assert rate.rate == 7.24
+        assert rate.source == "default"
 
-    def test_calculate_price_cost_plus(self):
-        """测试成本加成定价"""
-        service = PriceService()
-        price = service.calculate_price(
-            cost=10.0,
-            strategy=PricingStrategy.COST_PLUS,
-            markup=0.5  # 50%
+    def test_is_expired_false(self):
+        rate = ExchangeRate(base_currency="USD", target_currency="CNY", rate=7.24)
+        assert rate.is_expired(ttl=3600) is False
+
+    def test_is_expired_true(self):
+        import time
+        rate = ExchangeRate(
+            base_currency="USD",
+            target_currency="CNY",
+            rate=7.24,
+            timestamp=time.time() - 7200,
         )
-        assert isinstance(price, float)
-        assert price == 15.0  # 10 * 1.5
+        assert rate.is_expired(ttl=3600) is True
 
-    def test_calculate_price_competitor_based(self):
-        """测试竞品定价"""
-        service = PriceService()
-        price = service.calculate_price(
-            cost=10.0,
-            strategy=PricingStrategy.COMPETITOR_BASED,
-            competitor_prices=[15.0, 18.0, 20.0]
-        )
-        assert isinstance(price, float)
-        assert price > 0
 
-    def test_calculate_price_psychological(self):
-        """测试心理定价"""
-        service = PriceService()
-        price = service.calculate_price(
-            cost=10.0,
-            strategy=PricingStrategy.PSYCHOLOGICAL,
-            markup=1.0
-        )
-        assert isinstance(price, float)
-        # 应该以.99或.95结尾
-        assert price > 0
+class TestDefaultExchangeRateProvider:
+    """DefaultExchangeRateProvider 测试"""
 
-    def test_apply_price_ending(self):
-        """测试应用价格尾数"""
-        service = PriceService()
-        result = service.apply_price_ending(20.0, ending="99")
-        assert isinstance(result, float)
-        assert result == 19.99
+    @pytest.mark.asyncio
+    async def test_get_rate_usd_to_cny(self):
+        provider = DefaultExchangeRateProvider()
+        rate = await provider.get_rate("USD", "CNY")
+        assert rate.base_currency == "USD"
+        assert rate.target_currency == "CNY"
+        assert rate.rate == 7.24
 
-    def test_apply_price_ending_95(self):
-        """测试.95尾数"""
-        service = PriceService()
-        result = service.apply_price_ending(20.0, ending="95")
-        assert isinstance(result, float)
-        assert result == 19.95
+    @pytest.mark.asyncio
+    async def test_get_rate_same_currency(self):
+        provider = DefaultExchangeRateProvider()
+        rate = await provider.get_rate("USD", "USD")
+        assert rate.rate == 1.0
 
-    def test_calculate_sale_price(self):
-        """测试计算促销价"""
-        service = PriceService()
-        sale_price = service.calculate_sale_price(100.0, discount=0.2)
-        assert isinstance(sale_price, float)
-        assert sale_price == 80.0  # 100 * 0.8
+    @pytest.mark.asyncio
+    async def test_get_rate_case_insensitive(self):
+        provider = DefaultExchangeRateProvider()
+        rate = await provider.get_rate("usd", "cny")
+        assert rate.base_currency == "USD"
+        assert rate.target_currency == "CNY"
 
-    def test_calculate_sale_price_percentage(self):
-        """测试百分比折扣"""
-        service = PriceService()
-        sale_price = service.calculate_sale_price(100.0, discount_percent=20)
-        assert isinstance(sale_price, float)
-        assert sale_price == 80.0
+    @pytest.mark.asyncio
+    async def test_get_rate_unknown_currency(self):
+        provider = DefaultExchangeRateProvider()
+        # 未知货币默认 1.0
+        rate = await provider.get_rate("USD", "XXX")
+        assert rate.rate == 1.0
 
-    def test_calculate_discount_percentage(self):
-        """测试计算折扣百分比"""
-        service = PriceService()
-        discount = service.calculate_discount_percentage(100.0, 80.0)
-        assert isinstance(discount, float)
-        assert discount == 20.0  # 20% off
+    @pytest.mark.asyncio
+    async def test_get_rates_batch(self):
+        provider = DefaultExchangeRateProvider()
+        rates = await provider.get_rates("USD", ["CNY", "EUR"])
+        assert "CNY" in rates
+        assert "EUR" in rates
+        assert rates["CNY"].rate == 7.24
+        assert rates["EUR"].rate == 0.92
 
-    def test_convert_currency(self):
-        """测试货币转换"""
-        service = PriceService()
-        result = service.convert_currency(100.0, "USD", "EUR")
-        assert isinstance(result, float)
-        assert result > 0
+    def test_is_available(self):
+        provider = DefaultExchangeRateProvider()
+        assert provider.is_available() is True
 
-    def test_get_exchange_rate(self):
-        """测试获取汇率"""
-        service = PriceService()
-        rate = service.get_exchange_rate("USD", "EUR")
-        assert isinstance(rate, float)
-        assert rate > 0
 
-    def test_get_supported_currencies(self):
-        """测试获取支持的货币"""
-        service = PriceService()
-        currencies = service.get_supported_currencies()
-        assert isinstance(currencies, list)
-        assert len(currencies) > 0
-        assert "USD" in currencies
-        assert "EUR" in currencies
+class TestExchangeRateService:
+    """ExchangeRateService 测试"""
 
-    def test_format_price(self):
-        """测试格式化价格"""
-        service = PriceService()
-        formatted = service.format_price(29.99, "USD")
-        assert isinstance(formatted, str)
-        assert "$" in formatted or "USD" in formatted
+    def test_singleton(self):
+        from app.services.price_service import exchange_rate_service as s1
+        assert s1 is exchange_rate_service
 
-    def test_format_price_euro(self):
-        """测试欧元格式化"""
-        service = PriceService()
-        formatted = service.format_price(29.99, "EUR")
-        assert isinstance(formatted, str)
-        assert "€" in formatted or "EUR" in formatted
+    def test_init_providers(self):
+        service = ExchangeRateService()
+        assert len(service.providers) > 0
 
-    def test_calculate_profit_margin(self):
-        """测试计算利润率"""
-        service = PriceService()
-        margin = service.calculate_profit_margin(cost=10.0, price=15.0)
-        assert isinstance(margin, float)
-        assert margin > 0
+    @pytest.mark.asyncio
+    async def test_get_rate_same_currency(self):
+        service = ExchangeRateService()
+        rate = await service.get_rate("USD", "USD")
+        assert rate.rate == 1.0
+        assert rate.source == "direct"
 
-    def test_calculate_markup(self):
-        """测试计算加成"""
-        service = PriceService()
-        markup = service.calculate_markup(cost=10.0, price=15.0)
-        assert isinstance(markup, float)
-        assert markup == 50.0  # 50% markup
+    @pytest.mark.asyncio
+    async def test_get_rate_usd_cny(self):
+        service = ExchangeRateService()
+        rate = await service.get_rate("USD", "CNY", use_cache=False)
+        assert rate.rate > 1
 
-    def test_suggest_price(self):
-        """测试建议价格"""
-        service = PriceService()
-        suggestion = service.suggest_price(
-            cost=10.0,
-            category="electronics",
-            competitor_prices=[15.0, 18.0, 20.0]
-        )
-        assert isinstance(suggestion, dict)
-        assert "recommended_price" in suggestion
-        assert "strategy" in suggestion
-        assert "profit_margin" in suggestion
+    @pytest.mark.asyncio
+    async def test_get_rate_uses_cache(self):
+        service = ExchangeRateService()
+        # 第一次获取，调用 provider
+        await service.get_rate("USD", "EUR", use_cache=True)
+        # 替换 provider 为 mock，验证第二次走缓存
+        mock_provider = MagicMock(spec=ExchangeRateProvider)
+        mock_provider.get_rate = AsyncMock()
+        service.providers = [mock_provider]
+        await service.get_rate("USD", "EUR", use_cache=True)
+        mock_provider.get_rate.assert_not_called()
 
-    def test_batch_price_calculation(self):
-        """测试批量价格计算"""
-        service = PriceService()
-        products = [
-            {"cost": 10.0, "name": "Product 1"},
-            {"cost": 20.0, "name": "Product 2"},
-            {"cost": 30.0, "name": "Product 3"},
+    @pytest.mark.asyncio
+    async def test_convert(self):
+        service = ExchangeRateService()
+        # USD -> USD 应该是原值
+        result = await service.convert(100.0, "USD", "USD")
+        assert result == 100.0
+
+    @pytest.mark.asyncio
+    async def test_convert_usd_to_cny(self):
+        service = ExchangeRateService()
+        result = await service.convert(100.0, "USD", "CNY", use_cache=False)
+        assert result == pytest.approx(100.0 * 7.24)
+
+    def test_clear_cache(self):
+        service = ExchangeRateService()
+        service.cache["test"] = "value"
+        service.clear_cache()
+        assert len(service.cache) == 0
+
+    def test_get_cache_stats(self):
+        service = ExchangeRateService()
+        stats = service.get_cache_stats()
+        assert "size" in stats
+        assert "ttl" in stats
+
+
+class TestPriceCalculator:
+    """PriceCalculator 测试"""
+
+    def test_format_price_usd(self):
+        calc = PriceCalculator()
+        formatted = calc.format_price(99.99, "USD")
+        assert "$" in formatted
+        assert "99.99" in formatted
+
+    def test_format_price_cny(self):
+        calc = PriceCalculator()
+        formatted = calc.format_price(199.0, "CNY")
+        assert "¥" in formatted
+
+    def test_format_price_unknown_currency(self):
+        calc = PriceCalculator()
+        formatted = calc.format_price(99.99, "XXX")
+        # 未知货币返回货币代码
+        assert "XXX" in formatted
+
+    def test_format_price_with_thousands(self):
+        calc = PriceCalculator()
+        formatted = calc.format_price(1299.99, "USD")
+        assert "1,299.99" in formatted
+
+    def test_apply_psychological_pricing_small(self):
+        calc = PriceCalculator()
+        # 小额：.95 或 .99
+        result = calc._apply_psychological_pricing(5.0)
+        assert result in [4.95, 5.95, 5.99]
+
+    def test_apply_psychological_pricing_medium(self):
+        calc = PriceCalculator()
+        # 中额：.99 结尾
+        result = calc._apply_psychological_pricing(25.0)
+        assert result == 25.99
+
+    def test_apply_psychological_pricing_large(self):
+        calc = PriceCalculator()
+        # 大额：取整减1
+        result = calc._apply_psychological_pricing(100.0)
+        assert result == 99.99
+
+    def test_apply_psychological_pricing_less_than_one(self):
+        calc = PriceCalculator()
+        # 小于1不处理
+        result = calc._apply_psychological_pricing(0.5)
+        assert result == 0.5
+
+    def test_apply_tiered_pricing_no_tiers(self):
+        calc = PriceCalculator()
+        result = calc._apply_tiered_pricing(100.0, [])
+        # 没有阶梯时默认 30% 加价
+        assert result == 130.0
+
+    def test_apply_tiered_pricing_with_tiers(self):
+        calc = PriceCalculator()
+        tiers = [
+            {"min_quantity": 1, "markup_percentage": 20},
+            {"min_quantity": 10, "markup_percentage": 15},
         ]
-        results = service.batch_calculate_prices(
-            products,
-            strategy=PricingStrategy.COST_PLUS,
-            markup=0.5
-        )
-        assert isinstance(results, list)
-        assert len(results) == 3
-        assert all("price" in r for r in results)
+        result = calc._apply_tiered_pricing(100.0, tiers)
+        # 默认使用第一档
+        assert result == 120.0
 
-    def test_generate_coupon_code(self):
-        """测试生成优惠券代码"""
-        service = PriceService()
-        coupon = service.generate_coupon_code(
-            discount_type="percent",
-            discount_value=20,
-            prefix="SAVE"
-        )
-        assert isinstance(coupon, dict)
-        assert "code" in coupon
-        assert "discount_type" in coupon
-        assert "discount_value" in coupon
+    def test_apply_competitive_pricing_no_competitors(self):
+        calc = PriceCalculator()
+        result = calc._apply_competitive_pricing(100.0, [])
+        assert result == 130.0
 
-    def test_validate_coupon(self):
-        """测试验证优惠券"""
-        service = PriceService()
-        is_valid = service.validate_coupon("SAVE20", subtotal=100.0)
-        assert isinstance(is_valid, bool)
+    def test_apply_competitive_pricing_with_competitors(self):
+        calc = PriceCalculator()
+        result = calc._apply_competitive_pricing(100.0, [200.0, 300.0])
+        # 平均 250 * 0.95 = 237.5
+        assert result == 237.5
 
-    def test_calculate_shipping(self):
-        """测试计算运费"""
-        service = PriceService()
-        shipping = service.calculate_shipping(
-            subtotal=100.0,
-            weight=2.0,
-            destination="US"
-        )
-        assert isinstance(shipping, float)
-        assert shipping >= 0
-
-    def test_calculate_tax(self):
-        """测试计算税费"""
-        service = PriceService()
-        tax = service.calculate_tax(subtotal=100.0, region="US-CA")
-        assert isinstance(tax, float)
-        assert tax >= 0
-
-    def test_get_pricing_tiers(self):
-        """测试获取价格阶梯"""
-        service = PriceService()
-        tiers = service.get_pricing_tiers(base_price=100.0)
-        assert isinstance(tiers, list)
-        assert len(tiers) > 0
-        assert all("quantity" in t and "price" in t for t in tiers)
-
-    def test_dynamic_pricing(self):
-        """测试动态定价"""
-        service = PriceService()
-        price = service.dynamic_pricing(
+    @pytest.mark.asyncio
+    async def test_calculate_price_percentage_markup(self):
+        calc = PriceCalculator()
+        result = await calc.calculate_price(
             base_price=100.0,
-            demand_level="high",
-            inventory_level=10
+            base_currency="USD",
+            target_currency="USD",
+            strategy=PriceStrategy.PERCENTAGE_MARKUP,
+            markup_percentage=30.0,
+            psychological_pricing=False,
         )
-        assert isinstance(price, float)
-        assert price > 0
+        assert result == 130.0
 
-    def test_get_instance(self):
-        """测试单例模式"""
-        s1 = get_price_service()
-        s2 = get_price_service()
-        assert s1 is s2
-
-    def test_round_price(self):
-        """测试价格四舍五入"""
-        service = PriceService()
-        rounded = service.round_price(19.999)
-        assert isinstance(rounded, float)
-        assert rounded == 20.0 or rounded == 19.99
-
-    def test_is_sale_price_better(self):
-        """测试促销价是否更优"""
-        service = PriceService()
-        assert service.is_sale_price_better(100.0, 80.0) is True
-        assert service.is_sale_price_better(100.0, 100.0) is False
-        assert service.is_sale_price_better(100.0, 120.0) is False
-
-    def test_calculate_lifetime_value(self):
-        """测试计算客户终身价值"""
-        service = PriceService()
-        ltv = service.calculate_lifetime_value(
-            avg_order_value=50.0,
-            purchase_frequency=4,
-            customer_lifespan=3
+    @pytest.mark.asyncio
+    async def test_calculate_price_fixed_markup(self):
+        calc = PriceCalculator()
+        result = await calc.calculate_price(
+            base_price=100.0,
+            base_currency="USD",
+            target_currency="USD",
+            strategy=PriceStrategy.FIXED_MARKUP,
+            markup_fixed=20.0,
+            psychological_pricing=False,
         )
-        assert isinstance(ltv, float)
-        assert ltv > 0
+        assert result == 120.0
 
-    def test_get_price_bracket(self):
-        """测试获取价格区间"""
-        service = PriceService()
-        bracket = service.get_price_bracket(59.99)
-        assert isinstance(bracket, str)
-        assert len(bracket) > 0
+    @pytest.mark.asyncio
+    async def test_calculate_price_with_currency_conversion(self):
+        calc = PriceCalculator()
+        result = await calc.calculate_price(
+            base_price=100.0,
+            base_currency="USD",
+            target_currency="CNY",
+            strategy=PriceStrategy.PERCENTAGE_MARKUP,
+            markup_percentage=0.0,
+            psychological_pricing=False,
+            use_cache=False,
+        )
+        # 100 USD * 7.24 = 724 CNY
+        assert result == pytest.approx(724.0)
+
+    @pytest.mark.asyncio
+    async def test_calculate_price_with_psychological(self):
+        calc = PriceCalculator()
+        result = await calc.calculate_price(
+            base_price=100.0,
+            base_currency="USD",
+            target_currency="USD",
+            strategy=PriceStrategy.PERCENTAGE_MARKUP,
+            markup_percentage=30.0,
+            psychological_pricing=True,
+        )
+        # 130 -> 心理定价 129.99
+        assert result == 129.99
+
+    @pytest.mark.asyncio
+    async def test_calculate_product_prices(self):
+        calc = PriceCalculator()
+        product = {
+            "regular_price": "100",
+            "sale_price": "80",
+            "price": "90",
+        }
+        result = await calc.calculate_product_prices(
+            product,
+            base_currency="USD",
+            target_currency="USD",
+            strategy=PriceStrategy.PERCENTAGE_MARKUP,
+            markup_percentage=10.0,
+            psychological_pricing=False,
+        )
+        assert result["regular_price"] == 110.0
+        assert result["sale_price"] == 88.0
+        assert result["price"] == 99.0
+        assert result["currency"] == "USD"
+
+    @pytest.mark.asyncio
+    async def test_calculate_product_prices_empty(self):
+        calc = PriceCalculator()
+        result = await calc.calculate_product_prices(
+            {},
+            base_currency="USD",
+            target_currency="USD",
+        )
+        assert result["currency"] == "USD"
+
+
+class TestPriceOptimizer:
+    """PriceOptimizer 测试"""
+
+    def test_singleton(self):
+        from app.services.price_service import price_optimizer as p1
+        assert p1 is price_optimizer
+
+    def test_optimize_prices_balanced(self):
+        opt = PriceOptimizer()
+        products = [{"cost_price": 100.0, "name": "p1"}, {"cost_price": 200.0, "name": "p2"}]
+        result = opt.optimize_prices(products, strategy="balanced", target_margin=30.0)
+        assert len(result) == 2
+        assert result[0]["optimized_price"] == 130.0
+        assert result[0]["margin"] == 30.0
+        assert result[1]["optimized_price"] == 260.0
+
+    def test_optimize_prices_max_profit(self):
+        opt = PriceOptimizer()
+        products = [{"cost_price": 100.0}]
+        result = opt.optimize_prices(products, strategy="max_profit", max_margin=50.0)
+        assert result[0]["optimized_price"] == 150.0
+        assert result[0]["margin"] == 50.0
+
+    def test_optimize_prices_max_volume(self):
+        opt = PriceOptimizer()
+        products = [{"cost_price": 100.0}]
+        result = opt.optimize_prices(products, strategy="max_volume", min_margin=15.0)
+        assert result[0]["optimized_price"] == pytest.approx(115.0)
+        assert result[0]["margin"] == 15.0
+
+    def test_optimize_prices_uses_price_when_no_cost(self):
+        opt = PriceOptimizer()
+        products = [{"price": 100.0}]
+        result = opt.optimize_prices(products, strategy="balanced", target_margin=20.0)
+        assert result[0]["optimized_price"] == 120.0
+
+    def test_optimize_prices_unknown_strategy(self):
+        opt = PriceOptimizer()
+        products = [{"cost_price": 100.0}]
+        result = opt.optimize_prices(products, strategy="unknown", target_margin=25.0)
+        # 未知策略用 target_margin
+        assert result[0]["optimized_price"] == 125.0
+
+    def test_suggest_price_no_competitors(self):
+        opt = PriceOptimizer()
+        result = opt.suggest_price(100.0, [])
+        assert result["suggested_price"] == 150.0
+        assert result["min_price"] == 120.0
+        assert result["max_price"] == 200.0
+        assert result["strategy"] == "default"
+
+    def test_suggest_price_medium_demand(self):
+        opt = PriceOptimizer()
+        result = opt.suggest_price(100.0, [200.0, 300.0], market_demand="medium")
+        # 平均 250 * 0.95 = 237.5
+        assert result["suggested_price"] == 237.5
+        assert result["strategy"] == "competitive_based"
+
+    def test_suggest_price_high_demand(self):
+        opt = PriceOptimizer()
+        result = opt.suggest_price(100.0, [200.0, 300.0], market_demand="high")
+        # 平均 250 * 1.05 = 262.5
+        assert result["suggested_price"] == 262.5
+
+    def test_suggest_price_low_demand(self):
+        opt = PriceOptimizer()
+        result = opt.suggest_price(100.0, [200.0, 300.0], market_demand="low")
+        # 最低 200 * 0.95 = 190
+        assert result["suggested_price"] == 190.0
+
+    def test_suggest_price_ensures_min_profit(self):
+        opt = PriceOptimizer()
+        # 竞争对手价格很低，确保最低利润
+        result = opt.suggest_price(100.0, [50.0, 60.0], market_demand="low")
+        # 最低价 50 * 0.95 = 47.5，但最低利润是 100*1.15=115
+        assert result["suggested_price"] >= 115.0

@@ -53,6 +53,24 @@ def get_task_function(task_type: str):
         return None
 
 
+def setup_scheduled_tasks(scheduled_scrapes=None):
+    """配置定时采集任务（Celery beat）
+
+    Args:
+        scheduled_scrapes: 定时采集配置列表，为空时使用默认配置
+    """
+    try:
+        from app.services.scraper_service import build_celery_beat_schedule, DEFAULT_SCHEDULED_SCRAPES
+        scrapes = scheduled_scrapes or DEFAULT_SCHEDULED_SCRAPES
+        beat_schedule = build_celery_beat_schedule(scrapes)
+        celery_app.conf.beat_schedule = beat_schedule
+        return beat_schedule
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to setup scheduled tasks: {e}")
+        return {}
+
+
 # 导入任务模块以注册
 try:
     from app.tasks import scraping_tasks  # noqa: F401

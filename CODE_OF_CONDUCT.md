@@ -172,7 +172,7 @@
 如果您对本行为准则有任何疑问或建议，请通过以下方式联系我们：
 
 - **邮箱**: conduct@wpforge.dev
-- **GitHub**: https://github.com/wpforge/wpforge
+- **GitHub**: https://github.com/worldop123/wpforge
 
 ---
 

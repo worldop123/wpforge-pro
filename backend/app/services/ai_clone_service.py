@@ -585,6 +585,677 @@ class AICloneService:
         }
         return names.get(page_type, page_type.value)
 
+    # ==================================================================
+    # 2.1 内容原创化 / AI 改写
+    # ==================================================================
+    # 同义词词典（中英混合，用于本地改写降AI痕迹）
+    _SYNONYMS: Dict[str, List[str]] = {
+        # 中文常见词
+        "非常": ["十分", "极其", "特别", "相当", "尤为"],
+        "很好": ["出色", "优秀", "卓越", "出众", "极佳"],
+        "提供": ["给予", "供应", "奉献", "呈现", "交付"],
+        "帮助": ["协助", "辅助", "助力", "支援", "支持"],
+        "重要": ["关键", "核心", "紧要", "重大", "至关重要"],
+        "使用": ["运用", "采用", "借助", "利用", "应用"],
+        "产品": ["商品", "物件", "制品", "货品", "出品"],
+        "服务": ["服务项目", "业务", "支持", "保障", "服务体系"],
+        "质量": ["品质", "水准", "质地", "品级", "工艺"],
+        "价格": ["价位", "定价", "费用", "成本", "售价"],
+        "快速": ["迅速", "快捷", "高效", "敏捷", "即刻"],
+        "简单": ["简便", "轻松", "便捷", "容易", "易于"],
+        "专业": ["专精", "资深", "内行", "权威", "精通"],
+        "满意": ["称心", "如意", "合意", "惬意", "舒心"],
+        "推荐": ["建议", "举荐", "引荐", "推崇", "力荐"],
+        "选择": ["挑选", "选用", "抉择", "甄选", "选取"],
+        "体验": ["感受", "体会", "领略", "感知", "经历"],
+        "创新": ["革新", "独创", "突破", "开拓", "创举"],
+        "设计": ["构思", "策划", "规划", "布局", "编排"],
+        "现代": ["当代", "新潮", "时尚", "前沿", "时下"],
+        # English common words
+        "good": ["great", "excellent", "superb", "outstanding", "remarkable"],
+        "best": ["top", "finest", "premier", "leading", "superior"],
+        "use": ["utilize", "employ", "apply", "leverage", "harness"],
+        "make": ["create", "produce", "craft", "build", "develop"],
+        "help": ["assist", "support", "aid", "facilitate", "enable"],
+        "provide": ["offer", "deliver", "supply", "furnish", "present"],
+        "quality": ["caliber", "standard", "grade", "excellence", "craftsmanship"],
+        "service": ["assistance", "support", "care", "attention", "provision"],
+        "fast": ["quick", "rapid", "swift", "prompt", "speedy"],
+        "easy": ["simple", "effortless", "straightforward", "intuitive", "seamless"],
+        "professional": ["expert", "specialized", "proficient", "skilled", "accomplished"],
+        "modern": ["contemporary", "current", "up-to-date", "present-day", "cutting-edge"],
+        "beautiful": ["stunning", "gorgeous", "elegant", "exquisite", "captivating"],
+        "powerful": ["robust", "potent", "dynamic", "vigorous", "capable"],
+    }
+
+    # 风格化前缀/后缀提示
+    _STYLE_HINTS: Dict[str, Dict[str, str]] = {
+        "natural": {
+            "prefix": "",
+            "suffix": "",
+            "connectors": ["，", "，同时", "，而且", "；"],
+        },
+        "professional": {
+            "prefix": "",
+            "suffix": "",
+            "connectors": ["。此外，", "。同时，", "；另外，", "。"],
+        },
+        "casual": {
+            "prefix": "",
+            "suffix": "",
+            "connectors": ["，", "，哈哈", "，说实话", "，其实"],
+        },
+        "persuasive": {
+            "prefix": "",
+            "suffix": "",
+            "connectors": ["，因此", "，由此可见", "，毫无疑问", "，正因如此"],
+        },
+    }
+
+    def _ai_chat_safe(self, prompt: str, system_prompt: str = "") -> Optional[str]:
+        """安全调用 AI 服务，失败返回 None"""
+        try:
+            from app.services.ai_service import ai_chat
+            return ai_chat(prompt, system_prompt=system_prompt) if system_prompt else ai_chat(prompt)
+        except Exception as e:
+            logger.debug(f"AI service unavailable, using local rewrite: {e}")
+            return None
+
+    def _local_rewrite(self, text: str, style: str = "natural") -> str:
+        """
+        本地算法改写文本：同义词替换 + 句式变换 + 段落重组
+        """
+        if not text or not text.strip():
+            return text
+
+        hints = self._STYLE_HINTS.get(style, self._STYLE_HINTS["natural"])
+
+        # 1. 同义词替换（按词长降序，避免子串误替换）
+        result = text
+        for word in sorted(self._SYNONYMS.keys(), key=len, reverse=True):
+            if word in result:
+                # 用正则做整词替换，避免破坏其他词
+                pattern = re.escape(word)
+                replacement = random.choice(self._SYNONYMS[word])
+                result = re.sub(pattern, replacement, result, count=random.randint(1, 3))
+
+        # 2. 句式变换：按句号/问号/感叹号切分，重排句子顺序（保持段落内）
+        sentence_endings = re.compile(r'([。！？.!?])')
+        sentences = sentence_endings.split(result)
+        # sentences 形如 ['句子1', '。', '句子2', '！', ...]
+        paired = []
+        i = 0
+        while i < len(sentences):
+            chunk = sentences[i]
+            ending = sentences[i + 1] if i + 1 < len(sentences) else ""
+            if chunk.strip() or ending:
+                paired.append((chunk, ending))
+            i += 2
+
+        if len(paired) > 2:
+            # 保留首尾句，中间打乱
+            middle = paired[1:-1]
+            random.shuffle(middle)
+            paired = [paired[0]] + middle + [paired[-1]]
+
+            # 用风格化连接词重组
+            rebuilt = []
+            for idx, (chunk, ending) in enumerate(paired):
+                rebuilt.append(chunk + ending)
+                if idx < len(paired) - 1 and random.random() < 0.3:
+                    connector = random.choice(hints["connectors"])
+                    rebuilt.append(connector)
+            result = "".join(rebuilt)
+
+        # 3. 段落重组：按双换行切分段落，打乱顺序
+        paragraphs = [p for p in re.split(r'\n\s*\n', result) if p.strip()]
+        if len(paragraphs) > 2:
+            # 保留首段，其余打乱
+            first = paragraphs[0]
+            rest = paragraphs[1:]
+            random.shuffle(rest)
+            result = first + "\n\n" + "\n\n".join(rest)
+
+        return result
+
+    def rewrite_content(self, text: str, style: str = "natural") -> str:
+        """
+        AI 文本改写（伪原创，去 AI 化，自然流畅）
+
+        保持原意但用词、句式、段落结构都不同。
+        支持多种风格：natural / professional / casual / persuasive。
+        如果 AI 服务不可用，使用本地算法（同义词替换、句式变换、段落重组）。
+
+        Args:
+            text: 原始文本
+            style: 改写风格
+
+        Returns:
+            改写后的文本
+        """
+        if not text or not text.strip():
+            return text
+
+        valid_styles = {"natural", "professional", "casual", "persuasive"}
+        if style not in valid_styles:
+            style = "natural"
+
+        style_descriptions = {
+            "natural": "自然流畅，像真人写的，避免AI痕迹",
+            "professional": "专业严谨，用词正式，适合商务场景",
+            "casual": "轻松随意，口语化，亲切自然",
+            "persuasive": "有说服力，强调价值，引导行动",
+        }
+
+        # 优先尝试 AI 改写
+        prompt = (
+            f"请改写以下文本，要求：\n"
+            f"1. 保持原意不变\n"
+            f"2. 风格：{style_descriptions.get(style, '')}\n"
+            f"3. 用词、句式、段落结构都要与原文不同\n"
+            f"4. 去除AI写作痕迹，使其自然流畅\n"
+            f"5. 只输出改写后的文本，不要解释\n\n"
+            f"原文：\n{text}"
+        )
+        ai_result = self._ai_chat_safe(prompt)
+        if ai_result and ai_result.strip() and ai_result.strip() != text.strip():
+            return ai_result.strip()
+
+        # AI 不可用或结果为空，使用本地算法
+        logger.debug(f"Using local rewrite algorithm (style={style})")
+        return self._local_rewrite(text, style)
+
+    # ==================================================================
+    # 2.2 AI 重设计
+    # ==================================================================
+    # 字体搭配库
+    _FONT_PAIRINGS: List[Dict[str, str]] = [
+        {"heading": "Inter", "body": "Open Sans", "style": "modern"},
+        {"heading": "Poppins", "body": "Lato", "style": "friendly"},
+        {"heading": "Montserrat", "body": "Source Sans Pro", "style": "elegant"},
+        {"heading": "Playfair Display", "body": "Lora", "style": "classic"},
+        {"heading": "Roboto", "body": "Roboto Slab", "style": "tech"},
+        {"heading": "Oswald", "body": "Quattrocento Sans", "style": "bold"},
+        {"heading": "Merriweather", "body": "Open Sans", "style": "readable"},
+        {"heading": "Nunito", "body": "Nunito Sans", "style": "soft"},
+        {"heading": "Raleway", "body": "Mukti", "style": "minimal"},
+        {"heading": "Work Sans", "body": "Inter", "style": "clean"},
+    ]
+
+    # 布局结构变体
+    _LAYOUT_VARIANTS: List[Dict[str, Any]] = [
+        {"header": "centered", "sidebar": "none", "footer": "multi-column", "grid": "12-col"},
+        {"header": "split", "sidebar": "left", "footer": "simple", "grid": "16-col"},
+        {"header": "sticky", "sidebar": "right", "footer": "multi-column", "grid": "12-col"},
+        {"header": "overlay", "sidebar": "none", "footer": "cta-focused", "grid": "fluid"},
+        {"header": "minimal", "sidebar": "none", "footer": "minimal", "grid": "8-col"},
+    ]
+
+    @staticmethod
+    def _hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
+        """hex 转 RGB"""
+        hex_color = hex_color.lstrip("#")
+        if len(hex_color) == 3:
+            hex_color = "".join(c * 2 for c in hex_color)
+        try:
+            return tuple(int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
+        except (ValueError, IndexError):
+            return (0, 0, 0)
+
+    @staticmethod
+    def _rgb_to_hex(r: int, g: int, b: int) -> str:
+        """RGB 转 hex"""
+        r, g, b = max(0, min(255, int(r))), max(0, min(255, int(g))), max(0, min(255, int(b)))
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    @classmethod
+    def _rgb_to_hsl(cls, r: int, g: int, b: int) -> Tuple[float, float, float]:
+        """RGB 转 HSL"""
+        r, g, b = r / 255.0, g / 255.0, b / 255.0
+        mx, mn = max(r, g, b), min(r, g, b)
+        l = (mx + mn) / 2.0
+        if mx == mn:
+            h = s = 0.0
+        else:
+            d = mx - mn
+            s = d / (2.0 - mx - mn) if l > 0.5 else d / (mx + mn)
+            if mx == r:
+                h = (g - b) / d + (6.0 if g < b else 0.0)
+            elif mx == g:
+                h = (b - r) / d + 2.0
+            else:
+                h = (r - g) / d + 4.0
+            h /= 6.0
+        return h * 360.0, s * 100.0, l * 100.0
+
+    @classmethod
+    def _hsl_to_rgb(cls, h: float, s: float, l: float) -> Tuple[int, int, int]:
+        """HSL 转 RGB"""
+        h, s, l = h / 360.0, s / 100.0, l / 100.0
+
+        def hue_to_rgb(p, q, t):
+            if t < 0: t += 1
+            if t > 1: t -= 1
+            if t < 1 / 6: return p + (q - p) * 6 * t
+            if t < 1 / 2: return q
+            if t < 2 / 3: return p + (q - p) * (2 / 3 - t) * 6
+            return p
+
+        if s == 0:
+            r = g = b = l
+        else:
+            q = l * (1 + s) if l < 0.5 else l + s - l * s
+            p = 2 * l - q
+            r = hue_to_rgb(p, q, h + 1 / 3)
+            g = hue_to_rgb(p, q, h)
+            b = hue_to_rgb(p, q, h - 1 / 3)
+        return cls._rgb_to_hex(r * 255, g * 255, b * 255)
+
+    @classmethod
+    def _shift_color(cls, hex_color: str, hue_shift: float = 0.0,
+                     sat_shift: float = 0.0, light_shift: float = 0.0) -> str:
+        """基于 HSL 调整颜色"""
+        r, g, b = cls._hex_to_rgb(hex_color)
+        h, s, l = cls._rgb_to_hsl(r, g, b)
+        h = (h + hue_shift) % 360.0
+        s = max(0.0, min(100.0, s + sat_shift))
+        l = max(0.0, min(100.0, l + light_shift))
+        return cls._hsl_to_rgb(h, s, l)
+
+    def _extract_colors_from_style(self, original_style: Any) -> Dict[str, str]:
+        """从原始风格中提取颜色（支持 ColorScheme / dict / DesignStyle）"""
+        colors = {}
+        if isinstance(original_style, ColorScheme):
+            colors = {
+                "primary": original_style.primary,
+                "secondary": original_style.secondary,
+                "accent": original_style.accent,
+                "background": original_style.background,
+                "text": original_style.text,
+                "text_light": original_style.text_light,
+            }
+        elif isinstance(original_style, dict):
+            for key in ("primary", "secondary", "accent", "background", "text", "text_light"):
+                val = original_style.get(key)
+                if val and isinstance(val, str) and val.startswith("#"):
+                    colors[key] = val
+        elif isinstance(original_style, DesignStyle):
+            scheme = self._generate_color_scheme(original_style)
+            colors = {
+                "primary": scheme.primary,
+                "secondary": scheme.secondary,
+                "accent": scheme.accent,
+                "background": scheme.background,
+                "text": scheme.text,
+                "text_light": scheme.text_light,
+            }
+        return colors
+
+    def redesign_style(self, original_style: Any) -> Dict[str, Any]:
+        """
+        AI 重设计：基于原始风格生成新的设计方案
+
+        - 自动生成新的配色方案（基于原色生成和谐的新色板）
+        - 自动选择字体搭配
+        - 自动调整布局结构
+        - 确保与原站有明显差异但保持专业度
+
+        Args:
+            original_style: 原始风格，可为 ColorScheme / dict / DesignStyle
+
+        Returns:
+            新的设计方案字典，包含 colors, fonts, layout, uniqueness_score
+        """
+        original_colors = self._extract_colors_from_style(original_style)
+
+        # 生成新的配色：基于原色做色相旋转 + 饱和度/亮度调整，确保和谐且明显不同
+        # 色相旋转 60-180 度（互补色或三角色），保证明显差异
+        hue_shift = random.choice([60.0, 90.0, 120.0, 150.0, 180.0, -60.0, -120.0])
+        sat_shift = random.uniform(-15.0, 15.0)
+        light_shift = random.uniform(-10.0, 10.0)
+
+        if original_colors:
+            new_colors = {
+                key: self._shift_color(val, hue_shift, sat_shift, light_shift)
+                for key, val in original_colors.items()
+            }
+        else:
+            # 没有原始颜色，从随机风格生成
+            style = random.choice(list(DesignStyle))
+            scheme = self._generate_color_scheme(style)
+            new_colors = {
+                "primary": scheme.primary,
+                "secondary": scheme.secondary,
+                "accent": scheme.accent,
+                "background": scheme.background,
+                "text": scheme.text,
+                "text_light": scheme.text_light,
+            }
+
+        # 字体搭配：随机选择，与原站不同
+        fonts = random.choice(self._FONT_PAIRINGS)
+
+        # 布局结构：随机选择变体
+        layout = random.choice(self._LAYOUT_VARIANTS)
+
+        # 计算独特性评分：色相差异越大、字体/布局不同，分数越高
+        color_diff = 0.0
+        if original_colors:
+            for key in ("primary", "secondary", "accent"):
+                if key in original_colors and key in new_colors:
+                    orig_rgb = self._hex_to_rgb(original_colors[key])
+                    new_rgb = self._hex_to_rgb(new_colors[key])
+                    # 欧氏距离归一化
+                    dist = sum((a - b) ** 2 for a, b in zip(orig_rgb, new_rgb)) ** 0.5
+                    color_diff += min(1.0, dist / (255 * (3 ** 0.5)))
+            color_diff = color_diff / 3.0 if color_diff else 0.0
+
+        uniqueness_score = min(1.0, 0.5 + color_diff * 0.4 + random.uniform(0.0, 0.1))
+
+        result = {
+            "colors": new_colors,
+            "fonts": fonts,
+            "layout": layout,
+            "original_colors": original_colors,
+            "hue_shift": hue_shift,
+            "uniqueness_score": round(uniqueness_score, 3),
+            "design_notes": (
+                f"色相旋转 {hue_shift}° 生成和谐新色板，"
+                f"采用 {fonts['heading']}/{fonts['body']} 字体搭配，"
+                f"布局调整为 {layout['header']} 头部 + {layout['sidebar']} 侧栏。"
+            ),
+        }
+
+        logger.info(f"Redesigned style: uniqueness={uniqueness_score:.2f}")
+        return result
+
+    # ==================================================================
+    # 2.3 差异化保证
+    # ==================================================================
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        """文本归一化：去除空白和标点差异"""
+        if not text:
+            return ""
+        # 去除 HTML 标签
+        text = re.sub(r'<[^>]+>', '', text)
+        # 去除多余空白
+        text = re.sub(r'\s+', '', text)
+        # 转小写
+        return text.lower().strip()
+
+    @staticmethod
+    def _jaccard_similarity(set_a, set_b) -> float:
+        """Jaccard 相似度"""
+        if not set_a and not set_b:
+            return 1.0
+        union = set_a | set_b
+        if not union:
+            return 1.0
+        return len(set_a & set_b) / len(union)
+
+    def _text_difference(self, original: str, generated: str) -> float:
+        """计算文本差异度 (0-1, 1 表示完全不同)"""
+        if not original and not generated:
+            return 0.0
+        if not original or not generated:
+            return 1.0
+
+        norm_a = self._normalize_text(original)
+        norm_b = self._normalize_text(generated)
+
+        if norm_a == norm_b:
+            return 0.0
+
+        # 1. 字符级差异（基于编辑距离的近似）
+        # 用字符集合的 Jaccard 距离
+        chars_a = set(norm_a)
+        chars_b = set(norm_b)
+        char_sim = self._jaccard_similarity(chars_a, chars_b)
+        char_diff = 1.0 - char_sim
+
+        # 2. 词级差异
+        # 中文按字切，英文按空格切（这里简单按字符 bigram）
+        def bigrams(s):
+            return {s[i:i + 2] for i in range(len(s) - 1)} if len(s) > 1 else {s}
+
+        bigrams_a = bigrams(norm_a)
+        bigrams_b = bigrams(norm_b)
+        word_sim = self._jaccard_similarity(bigrams_a, bigrams_b)
+        word_diff = 1.0 - word_sim
+
+        # 3. 长度差异
+        len_a, len_b = len(norm_a), len(norm_b)
+        len_diff = abs(len_a - len_b) / max(len_a, len_b, 1)
+
+        # 综合差异度（加权平均）
+        diff = 0.4 * word_diff + 0.4 * char_diff + 0.2 * len_diff
+        return max(0.0, min(1.0, diff))
+
+    def ensure_differentiation(self, original: Any, generated: Any) -> Dict[str, Any]:
+        """
+        对比原始和生成的内容，计算差异度
+
+        Args:
+            original: 原始内容（字符串或字典）
+            generated: 生成的内容（字符串或字典）
+
+        Returns:
+            差异度评分 (0-1) 和具体差异点。
+            如果差异度 < 0.3，自动调整生成内容。
+        """
+        # 提取可比较的文本
+        def extract_text(obj):
+            if isinstance(obj, str):
+                return obj
+            if isinstance(obj, dict):
+                # 收集所有字符串值
+                parts = []
+                for v in obj.values():
+                    if isinstance(v, str):
+                        parts.append(v)
+                    elif isinstance(v, (list, dict)):
+                        parts.append(extract_text(v))
+                return " ".join(parts)
+            if isinstance(obj, (list, tuple)):
+                return " ".join(extract_text(item) for item in obj)
+            return str(obj) if obj else ""
+
+        text_a = extract_text(original)
+        text_b = extract_text(generated)
+
+        diff_score = self._text_difference(text_a, text_b)
+
+        # 收集具体差异点
+        differences: List[str] = []
+        norm_a = self._normalize_text(text_a)
+        norm_b = self._normalize_text(text_b)
+
+        if norm_a != norm_b:
+            differences.append("文本内容不同")
+
+        if abs(len(norm_a) - len(norm_b)) > max(len(norm_a), len(norm_b), 1) * 0.1:
+            differences.append(f"文本长度差异（原文 {len(norm_a)} 字符 vs 生成 {len(norm_b)} 字符）")
+
+        # 字符集合差异
+        chars_a = set(norm_a)
+        chars_b = set(norm_b)
+        only_in_a = chars_a - chars_b
+        only_in_b = chars_b - chars_a
+        if only_in_a:
+            differences.append(f"原文独有字符: {''.join(sorted(only_in_a))[:20]}")
+        if only_in_b:
+            differences.append(f"生成独有字符: {''.join(sorted(only_in_b))[:20]}")
+
+        # 字典字段差异
+        if isinstance(original, dict) and isinstance(generated, dict):
+            keys_a = set(original.keys())
+            keys_b = set(generated.keys())
+            if keys_a != keys_b:
+                differences.append(f"字段差异：原文 {keys_a} vs 生成 {keys_b}")
+
+        # 如果差异度不足，自动调整
+        adjusted = None
+        final_score = diff_score
+        if diff_score < 0.3:
+            # 对生成文本进行改写以增加差异
+            if isinstance(generated, str):
+                adjusted = self._local_rewrite(generated, style="natural")
+                final_score = self._text_difference(text_a, adjusted)
+                differences.append(f"差异度不足({diff_score:.2f}<0.3)，已自动改写提升至 {final_score:.2f}")
+            elif isinstance(generated, dict):
+                adjusted = dict(generated)
+                for key, val in list(adjusted.items()):
+                    if isinstance(val, str) and len(val) > 10:
+                        adjusted[key] = self._local_rewrite(val, style="natural")
+                final_score = self._text_difference(text_a, extract_text(adjusted))
+                differences.append(f"差异度不足({diff_score:.2f}<0.3)，已自动改写字段提升至 {final_score:.2f}")
+
+        if not differences:
+            differences.append("无明显差异检测到")
+
+        return {
+            "differentiation_score": round(final_score, 4),
+            "original_score": round(diff_score, 4),
+            "is_sufficient": final_score >= 0.3,
+            "differences": differences,
+            "adjusted": adjusted,
+            "original_length": len(norm_a),
+            "generated_length": len(norm_b),
+        }
+
+    # ==================================================================
+    # 2.4 多源模式 / 多站融合
+    # ==================================================================
+    def multi_site_fusion(self, urls: List[str]) -> Dict[str, Any]:
+        """
+        参考多个网站融合生成新站点
+
+        提取各站优点组合：分析每个站点的页面类型、布局模块、设计风格，
+        然后融合各站的最佳元素生成新的站点方案。
+
+        Args:
+            urls: 参考站点 URL 列表
+
+        Returns:
+            融合生成的新站点方案
+        """
+        if not urls:
+            return {
+                "source_urls": [],
+                "fused_pages": [],
+                "color_scheme": None,
+                "design_style": DesignStyle.MODERN_MINIMAL.value,
+                "fusion_strategy": [],
+                "total_pages": 0,
+                "status": "no_urls",
+            }
+
+        # 分析每个站点（模拟，使用 sample urls）
+        site_analyses: List[Dict[str, Any]] = []
+        all_pages: List[ClonedPage] = []
+        all_layouts: Dict[str, int] = {}  # 模块名 -> 出现次数
+        all_page_types: Dict[PageType, int] = {}
+
+        for url in urls:
+            sample_urls = self._generate_sample_urls(url, 8)
+            result = self.analyze_website(sample_urls)
+            site_analyses.append({
+                "url": url,
+                "total_pages": result.total_pages,
+                "design_style": result.design_style.value,
+                "color_scheme": result.color_scheme,
+                "page_count": len(result.pages),
+            })
+            all_pages.extend(result.pages)
+
+            # 统计布局模块出现频次
+            for page in result.pages:
+                for module in page.original_layout:
+                    name = module.get("module", "")
+                    all_layouts[name] = all_layouts.get(name, 0) + 1
+                all_page_types[page.page_type] = all_page_types.get(page.page_type, 0) + 1
+
+        # 融合策略：选择出现频次最高的布局模块（各站共识的优质模块）
+        sorted_modules = sorted(all_layouts.items(), key=lambda x: x[1], reverse=True)
+        fused_modules = [name for name, count in sorted_modules[:8]]
+
+        # 选择最常见页面类型作为新站点页面
+        sorted_page_types = sorted(all_page_types.items(), key=lambda x: x[1], reverse=True)
+        fused_page_types = [pt for pt, _ in sorted_page_types[:6]]
+
+        # 融合配色：从各站配色中取主色，生成新的和谐色板
+        source_colors: List[str] = []
+        for analysis in site_analyses:
+            scheme = analysis.get("color_scheme")
+            if scheme and isinstance(scheme, ColorScheme):
+                source_colors.append(scheme.primary)
+
+        # 基于第一个有颜色的站点生成新配色，做色相旋转确保差异
+        base_scheme = None
+        for analysis in site_analyses:
+            scheme = analysis.get("color_scheme")
+            if scheme and isinstance(scheme, ColorScheme):
+                base_scheme = scheme
+                break
+
+        if base_scheme:
+            redesigned = self.redesign_style(base_scheme)
+            fused_colors = redesigned["colors"]
+            design_notes = redesigned.get("design_notes", "")
+        else:
+            fused_colors = {}
+            design_notes = "无原始配色，使用默认方案"
+
+        # 选择字体和布局
+        fonts = random.choice(self._FONT_PAIRINGS)
+        layout = random.choice(self._LAYOUT_VARIANTS)
+
+        # 生成融合后的页面结构
+        fused_pages: List[Dict[str, Any]] = []
+        for page_type in fused_page_types:
+            fused_pages.append({
+                "page_type": page_type.value,
+                "page_type_name": self.get_page_type_name(page_type),
+                "modules": fused_modules[:5],
+                "source_inspiration": [urls[0]] if urls else [],
+            })
+
+        # 融合策略说明
+        fusion_strategy: List[str] = [
+            f"分析了 {len(urls)} 个参考站点，共 {len(all_pages)} 个页面",
+            f"选取 {len(fused_modules)} 个高频布局模块（各站共识的优质元素）",
+            f"融合 {len(source_colors)} 个站点的配色，生成新的和谐色板",
+            f"采用 {fonts['heading']}/{fonts['body']} 字体搭配",
+            f"布局结构：{layout['header']} 头部 + {layout['sidebar']} 侧栏",
+            design_notes,
+        ]
+
+        result = {
+            "source_urls": urls,
+            "site_analyses": [
+                {
+                    "url": a["url"],
+                    "total_pages": a["total_pages"],
+                    "design_style": a["design_style"],
+                }
+                for a in site_analyses
+            ],
+            "fused_pages": fused_pages,
+            "fused_modules": fused_modules,
+            "fused_page_types": [pt.value for pt in fused_page_types],
+            "color_scheme": fused_colors,
+            "fonts": fonts,
+            "layout": layout,
+            "design_style": (site_analyses[0]["design_style"] if site_analyses else DesignStyle.MODERN_MINIMAL.value),
+            "fusion_strategy": fusion_strategy,
+            "total_pages": len(fused_pages),
+            "status": "fused",
+        }
+
+        logger.info(f"Multi-site fusion: {len(urls)} sites -> {len(fused_pages)} pages")
+        return result
+
 
 # 全局实例
 ai_clone_service = AICloneService()

@@ -19,6 +19,11 @@ from app.services.proxy.fingerprint.webrtc_fingerprint import WebRTCFingerprint
 from app.services.proxy.fingerprint.storage_fingerprint import StorageFingerprint
 from app.services.proxy.fingerprint.performance_fingerprint import PerformanceFingerprint
 from app.services.proxy.fingerprint.sensor_fingerprint import SensorFingerprint
+from app.services.proxy.fingerprint.fingerprint_consistency import (
+    FingerprintConsistency,
+    FingerprintAuthenticity,
+    FingerprintDiversity,
+)
 
 __all__ = [
     "FingerprintGenerator",
@@ -36,4 +41,7 @@ __all__ = [
     "StorageFingerprint",
     "PerformanceFingerprint",
     "SensorFingerprint",
+    "FingerprintConsistency",
+    "FingerprintAuthenticity",
+    "FingerprintDiversity",
 ]

@@ -30,7 +30,7 @@
 
 ```bash
 # 克隆项目
-git clone https://github.com/wpforge/wpforge.git
+git clone https://github.com/worldop123/wpforge.git
 cd wpforge
 
 # 复制配置文件
@@ -63,8 +63,8 @@ git pull origin main
 docker-compose build
 docker-compose up -d
 
-# 4. 执行数据库迁移
-docker-compose exec backend alembic upgrade head
+# 4. 初始化数据库（不使用 Alembic）
+docker-compose exec backend python -c "from app.core.database import init_db; init_db()"
 ```
 
 ### Q: 可以在共享主机上安装吗？
@@ -171,7 +171,8 @@ docker-compose exec backend alembic upgrade head
 
 3. **数据库初始化**
    ```bash
-   docker-compose exec backend alembic upgrade head
+   # 本项目不使用 Alembic，使用 init_db() 初始化
+   docker-compose exec backend python -c "from app.core.database import init_db; init_db()"
    ```
 
 ### Q: Redis连接失败？
@@ -487,7 +488,7 @@ WPForge支持插件扩展，您可以：
 ### Q: 如何报告Bug或提交建议？
 
 **A:** 
-- GitHub Issues: https://github.com/wpforge/wpforge/issues
+- GitHub Issues: https://github.com/worldop123/wpforge/issues
 - 请详细描述问题和复现步骤
 - 建议添加截图和日志
 
@@ -495,7 +496,7 @@ WPForge支持插件扩展，您可以：
 
 **还有其他问题？**
 - 查看 [文档](docs/)
-- 提交 [Issue](https://github.com/wpforge/wpforge/issues)
+- 提交 [Issue](https://github.com/worldop123/wpforge/issues)
 - 阅读 [用户指南](USER_GUIDE.md)
 
 ---

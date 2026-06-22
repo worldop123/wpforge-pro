@@ -62,10 +62,14 @@ async function initialize() {
   try {
     logger.info('Initializing WPForge Relay Server...');
 
-    // 初始化Redis
+    // 初始化Redis（可选，连接失败不阻塞启动）
     redisClient = getRedisClient();
     await redisClient.connect();
-    logger.info('Redis connected');
+    if (redisClient.isConnected()) {
+      logger.info('Redis connected');
+    } else {
+      logger.warn('Redis not connected, running without Redis');
+    }
 
     // 初始化SQLite
     sqliteDB = getSQLiteDB();
@@ -114,7 +118,13 @@ async function initialize() {
  * 处理客户端连接
  */
 function handleConnection(socket) {
-  const clientInfo = socket.auth;
+  // AuthManager.authenticateSocket 将认证结果写入 socket.clientData
+  // 这里读取 clientData，并把 type 映射为 clientType 以兼容下方逻辑
+  const rawClientData = socket.clientData || {};
+  const clientInfo = {
+    ...rawClientData,
+    clientType: rawClientData.type,
+  };
   const clientId = socket.id;
 
   logger.info(`Client connected: ${clientInfo.clientType} (${clientId})`);

@@ -1,398 +1,408 @@
 """
-采集服务测试
+采集服务测试 - 测试 ProductScraper、SelectorGenerator、配置数据类
 """
 import pytest
-from app.services.scraper_service import ScraperService, get_scraper_service
-from app.services.ai_scraper_service import AIScraperService, get_ai_scraper_service
+from unittest.mock import MagicMock, AsyncMock, patch
+
+from app.services.scraper_service import (
+    SelectorConfig,
+    ScrapingConfig,
+    ScrapedProduct,
+    ProductScraper,
+    SelectorGenerator,
+    WOOCOMMERCE_SELECTORS,
+    create_woocommerce_scraper,
+)
 
 
-class TestScraperService:
-    """采集服务测试"""
+class TestSelectorConfig:
+    """SelectorConfig 数据类测试"""
 
-    def test_service_creation(self):
-        """测试服务创建"""
-        service = ScraperService()
-        assert service is not None
+    def test_defaults(self):
+        cfg = SelectorConfig(name="title", selector=".title")
+        assert cfg.name == "title"
+        assert cfg.selector == ".title"
+        assert cfg.attribute is None
+        assert cfg.multiple is False
+        assert cfg.required is False
+        assert cfg.default is None
+        assert cfg.regex is None
+        assert cfg.transform is None
 
-    def test_scrape_url(self):
-        """测试采集URL"""
-        service = ScraperService()
-        try:
-            result = service.scrape_url("https://example.com")
-            assert isinstance(result, dict)
-            assert "url" in result
-            assert "content" in result
-        except Exception:
-            pass
+    def test_with_all_fields(self):
+        cfg = SelectorConfig(
+            name="price",
+            selector=".price",
+            attribute="data-amount",
+            multiple=True,
+            required=True,
+            default="0",
+            regex=r"(\d+)",
+            transform="float",
+        )
+        assert cfg.attribute == "data-amount"
+        assert cfg.multiple is True
+        assert cfg.required is True
+        assert cfg.default == "0"
+        assert cfg.regex == r"(\d+)"
+        assert cfg.transform == "float"
 
-    def test_scrape_product(self):
-        """测试采集产品"""
-        service = ScraperService()
-        try:
-            product = service.scrape_product("https://example.com/product")
-            assert isinstance(product, dict)
-            assert "name" in product
-            assert "price" in product
-        except Exception:
-            pass
 
-    def test_scrape_product_list(self):
-        """测试采集产品列表"""
-        service = ScraperService()
-        try:
-            products = service.scrape_product_list(
-                "https://example.com/products",
-                max_items=10
-            )
-            assert isinstance(products, list)
-            assert len(products) <= 10
-        except Exception:
-            pass
+class TestScrapingConfig:
+    """ScrapingConfig 数据类测试"""
 
-    def test_extract_product_data(self):
-        """测试提取产品数据"""
-        service = ScraperService()
-        html = """
-        <html>
-            <head><title>Test Product</title></head>
-            <body>
-                <h1 class="product-title">Test Product</h1>
-                <span class="price">$29.99</span>
-                <div class="description">This is a test product.</div>
-            </body>
-        </html>
-        """
-        try:
-            data = service.extract_product_data(html)
-            assert isinstance(data, dict)
-        except Exception:
-            pass
+    def test_defaults(self):
+        cfg = ScrapingConfig(start_url="https://example.com")
+        assert cfg.start_url == "https://example.com"
+        assert cfg.max_pages == 10
+        assert cfg.max_products == 100
+        assert cfg.follow_pagination is True
+        assert cfg.delay_between_requests == 2.0
+        assert cfg.use_stealth is True
+        assert cfg.use_proxy is True
+        assert cfg.headless is True
+        assert cfg.timeout == 30000
+        assert cfg.max_retries == 3
 
-    def test_extract_images(self):
-        """测试提取图片"""
-        service = ScraperService()
-        html = """
-        <html>
-            <body>
-                <img src="https://example.com/1.jpg" alt="Product 1">
-                <img src="https://example.com/2.jpg" alt="Product 2">
-            </body>
-        </html>
-        """
-        try:
-            images = service.extract_images(html)
-            assert isinstance(images, list)
-            assert len(images) == 2
-        except Exception:
-            pass
+    def test_custom_values(self):
+        cfg = ScrapingConfig(
+            start_url="https://example.com",
+            max_pages=5,
+            max_products=50,
+            use_proxy=False,
+            use_stealth=False,
+        )
+        assert cfg.max_pages == 5
+        assert cfg.max_products == 50
+        assert cfg.use_proxy is False
+        assert cfg.use_stealth is False
 
-    def test_extract_links(self):
-        """测试提取链接"""
-        service = ScraperService()
-        html = """
-        <html>
-            <body>
-                <a href="https://example.com/page1">Page 1</a>
-                <a href="https://example.com/page2">Page 2</a>
-            </body>
-        </html>
-        """
-        try:
-            links = service.extract_links(html)
-            assert isinstance(links, list)
-            assert len(links) >= 2
-        except Exception:
-            pass
 
-    def test_detect_platform(self):
-        """测试检测平台"""
-        service = ScraperService()
-        try:
-            platform = service.detect_platform("https://example.com")
-            assert isinstance(platform, str)
-        except Exception:
-            pass
+class TestScrapedProduct:
+    """ScrapedProduct 数据类测试"""
 
-    def test_detect_pagination(self):
-        """测试检测分页"""
-        service = ScraperService()
-        html = """
-        <html>
-            <body>
-                <div class="pagination">
-                    <a href="?page=1">1</a>
-                    <a href="?page=2">2</a>
-                    <a href="?page=3">3</a>
-                </div>
-            </body>
-        </html>
-        """
-        try:
-            pagination = service.detect_pagination(html)
-            assert isinstance(pagination, dict)
-            assert "type" in pagination
-        except Exception:
-            pass
+    def test_defaults(self):
+        product = ScrapedProduct(url="https://example.com/p1")
+        assert product.url == "https://example.com/p1"
+        assert product.title is None
+        assert product.in_stock is True
+        assert product.categories == []
+        assert product.tags == []
+        assert product.images == []
+        assert product.attributes == []
+        assert product.variations == []
+        assert product.meta_data == {}
+        assert product.is_variable is False
 
-    def test_get_page_title(self):
-        """测试获取页面标题"""
-        service = ScraperService()
-        html = "<html><head><title>Test Page</title></head><body></body></html>"
-        try:
-            title = service.get_page_title(html)
-            assert title == "Test Page"
-        except Exception:
-            pass
+    def test_with_values(self):
+        product = ScrapedProduct(
+            url="https://example.com/p1",
+            title="Test Product",
+            price=99.99,
+            currency="USD",
+            images=["https://example.com/1.jpg"],
+            categories=["Electronics"],
+        )
+        assert product.title == "Test Product"
+        assert product.price == 99.99
+        assert product.currency == "USD"
+        assert len(product.images) == 1
+        assert product.categories == ["Electronics"]
 
-    def test_get_meta_description(self):
-        """测试获取Meta描述"""
-        service = ScraperService()
-        html = """
-        <html>
-            <head>
-                <meta name="description" content="Test description">
-            </head>
-            <body></body>
-        </html>
-        """
-        try:
-            desc = service.get_meta_description(html)
-            assert desc == "Test description"
-        except Exception:
-            pass
 
-    def test_scrape_with_proxy(self):
-        """测试带代理采集"""
-        service = ScraperService()
-        try:
-            result = service.scrape_url(
-                "https://example.com",
-                use_proxy=True
-            )
-            assert isinstance(result, dict)
-        except Exception:
-            pass
+class TestProductScraperParsePrice:
+    """ProductScraper._parse_price 测试（无需浏览器）"""
 
-    def test_scrape_with_stealth(self):
-        """测试带反检测采集"""
-        service = ScraperService()
-        try:
-            result = service.scrape_url(
-                "https://example.com",
-                use_stealth=True
-            )
-            assert isinstance(result, dict)
-        except Exception:
-            pass
+    def setup_method(self):
+        self.config = ScrapingConfig(start_url="https://example.com", use_proxy=False, use_stealth=False)
+        self.scraper = ProductScraper(self.config)
 
-    def test_batch_scrape(self):
-        """测试批量采集"""
-        service = ScraperService()
-        urls = [
-            "https://example.com/1",
-            "https://example.com/2",
-            "https://example.com/3",
+    def test_parse_price_usd(self):
+        price, currency = self.scraper._parse_price("$29.99")
+        assert price == 29.99
+        assert currency == "USD"
+
+    def test_parse_price_eur(self):
+        price, currency = self.scraper._parse_price("€19,90")
+        assert price == 19.90
+        assert currency == "EUR"
+
+    def test_parse_price_gbp(self):
+        price, currency = self.scraper._parse_price("£15.50")
+        assert price == 15.50
+        assert currency == "GBP"
+
+    def test_parse_price_cny(self):
+        price, currency = self.scraper._parse_price("¥199")
+        assert price == 199.0
+        assert currency == "JPY"
+
+    def test_parse_price_none(self):
+        price, currency = self.scraper._parse_price(None)
+        assert price is None
+        assert currency is None
+
+    def test_parse_price_empty(self):
+        price, currency = self.scraper._parse_price("")
+        assert price is None
+
+    def test_parse_price_no_digits(self):
+        price, currency = self.scraper._parse_price("Free")
+        assert price is None
+
+    def test_parse_price_with_thousands(self):
+        price, currency = self.scraper._parse_price("$1,299.99")
+        assert price == 1299.99
+        assert currency == "USD"
+
+    def test_parse_price_european_format(self):
+        # 欧洲格式：1.299,99
+        price, currency = self.scraper._parse_price("€1.299,99")
+        assert price == 1299.99
+        assert currency == "EUR"
+
+    def test_parse_srcset(self):
+        srcset = "img1.jpg 300w, img2.jpg 600w, img3.jpg 900w"
+        urls = self.scraper._parse_srcset(srcset)
+        assert len(urls) == 3
+        assert urls[0] == "img1.jpg"
+        assert urls[-1] == "img3.jpg"
+
+    def test_parse_srcset_single(self):
+        urls = self.scraper._parse_srcset("img.jpg")
+        assert urls == ["img.jpg"]
+
+
+class TestProductScraperInit:
+    """ProductScraper 初始化测试"""
+
+    def test_init(self):
+        config = ScrapingConfig(start_url="https://example.com")
+        scraper = ProductScraper(config)
+        assert scraper.config is config
+        assert scraper.browser is None
+        assert scraper.page is None
+        assert scraper.scraped_urls == set()
+        assert scraper.scraped_products == []
+
+    def test_scraped_urls_tracking(self):
+        config = ScrapingConfig(start_url="https://example.com")
+        scraper = ProductScraper(config)
+        scraper.scraped_urls.add("https://example.com/p1")
+        assert "https://example.com/p1" in scraper.scraped_urls
+        assert len(scraper.scraped_urls) == 1
+
+
+class TestSelectorGenerator:
+    """SelectorGenerator 测试"""
+
+    def test_generate_with_id(self):
+        gen = SelectorGenerator()
+        selector = gen.generate_selector_from_element({
+            "tag": "div",
+            "id": "product-title",
+            "classes": ["title"],
+        })
+        assert selector == "div#product-title"
+
+    def test_generate_with_classes(self):
+        gen = SelectorGenerator()
+        selector = gen.generate_selector_from_element({
+            "tag": "h2",
+            "classes": ["product", "title", "main"],
+        })
+        assert selector.startswith("h2")
+        assert ".product" in selector
+        assert ".title" in selector
+
+    def test_generate_skips_hover_active_classes(self):
+        gen = SelectorGenerator()
+        selector = gen.generate_selector_from_element({
+            "tag": "a",
+            "classes": ["link", "hover-state", "active-state"],
+        })
+        assert ".hover-state" not in selector
+        assert ".active-state" not in selector
+        assert ".link" in selector
+
+    def test_generate_with_attributes(self):
+        gen = SelectorGenerator()
+        selector = gen.generate_selector_from_element({
+            "tag": "div",
+            "classes": ["product"],
+            "attributes": {"data-product-id": "123"},
+        })
+        assert '[data-product-id="123"]' in selector
+
+    def test_generate_with_nth_child(self):
+        gen = SelectorGenerator()
+        selector = gen.generate_selector_from_element({
+            "tag": "li",
+            "nth_child": 3,
+        })
+        assert ":nth-child(3)" in selector
+
+    def test_generate_empty_element(self):
+        gen = SelectorGenerator()
+        selector = gen.generate_selector_from_element({})
+        assert selector == ""
+
+    def test_generate_hierarchy_returns_shortest(self):
+        gen = SelectorGenerator()
+        path = [
+            {"tag": "div", "classes": ["container"]},
+            {"tag": "ul", "classes": ["products"]},
+            {"tag": "li", "classes": ["item"]},
         ]
-        try:
-            results = service.batch_scrape(urls)
-            assert isinstance(results, list)
-            assert len(results) == 3
-        except Exception:
-            pass
+        selector = gen.generate_selector_hierarchy(path)
+        # 算法从后往前找最短且唯一的，li.item 已 > 3 字符所以直接返回
+        assert selector == "li.item"
 
-    def test_incremental_scrape(self):
-        """测试增量采集"""
-        service = ScraperService()
-        try:
-            result = service.incremental_scrape(
-                "https://example.com/products",
-                last_scraped="2024-01-01"
-            )
-            assert isinstance(result, dict)
-            assert "new_items" in result
-            assert "updated_items" in result
-        except Exception:
-            pass
-
-    def test_schedule_scrape(self):
-        """测试定时采集"""
-        service = ScraperService()
-        try:
-            task = service.schedule_scrape(
-                url="https://example.com",
-                interval="daily"
-            )
-            assert isinstance(task, dict)
-            assert "task_id" in task
-        except Exception:
-            pass
-
-    def test_get_scrape_history(self):
-        """测试获取采集历史"""
-        service = ScraperService()
-        try:
-            history = service.get_scrape_history(limit=10)
-            assert isinstance(history, list)
-        except Exception:
-            pass
-
-    def test_get_instance(self):
-        """测试单例模式"""
-        s1 = get_scraper_service()
-        s2 = get_scraper_service()
-        assert s1 is s2
-
-    def test_validate_url(self):
-        """测试验证URL"""
-        service = ScraperService()
-        assert service.validate_url("https://example.com") is True
-        assert service.validate_url("not-a-url") is False
-
-    def test_clean_html(self):
-        """测试清理HTML"""
-        service = ScraperService()
-        html = "<div>  Hello  <script>alert('xss')</script> World  </div>"
-        try:
-            cleaned = service.clean_html(html)
-            assert isinstance(cleaned, str)
-            assert "<script>" not in cleaned
-        except Exception:
-            pass
-
-    def test_extract_text(self):
-        """测试提取文本"""
-        service = ScraperService()
-        html = "<div><p>Hello <strong>World</strong></p></div>"
-        try:
-            text = service.extract_text(html)
-            assert isinstance(text, str)
-            assert "Hello" in text
-            assert "World" in text
-        except Exception:
-            pass
-
-
-class TestAIScraperService:
-    """AI采集服务测试"""
-
-    def test_service_creation(self):
-        """测试服务创建"""
-        service = AIScraperService()
-        assert service is not None
-
-    def test_ai_analyze_page(self):
-        """测试AI分析页面"""
-        service = AIScraperService()
-        try:
-            result = service.ai_analyze_page("https://example.com")
-            assert isinstance(result, dict)
-            assert "platform" in result
-            assert "structure" in result
-        except Exception:
-            pass
-
-    def test_auto_detect_selectors(self):
-        """测试自动检测选择器"""
-        service = AIScraperService()
-        html = """
-        <html>
-            <body>
-                <div class="product">
-                    <h2 class="title">Product 1</h2>
-                    <span class="price">$10</span>
-                </div>
-                <div class="product">
-                    <h2 class="title">Product 2</h2>
-                    <span class="price">$20</span>
-                </div>
-            </body>
-        </html>
-        """
-        try:
-            selectors = service.auto_detect_selectors(html, "product_list")
-            assert isinstance(selectors, dict)
-            assert "item_selector" in selectors
-        except Exception:
-            pass
-
-    def test_ai_extract_product(self):
-        """测试AI提取产品"""
-        service = AIScraperService()
-        try:
-            product = service.ai_extract_product("https://example.com/product")
-            assert isinstance(product, dict)
-            assert "name" in product
-            assert "price" in product
-            assert "description" in product
-        except Exception:
-            pass
-
-    def test_ai_classify_products(self):
-        """测试AI分类产品"""
-        service = AIScraperService()
-        products = [
-            {"name": "Wireless Headphones", "category": "Electronics"},
-            {"name": "T-Shirt", "category": "Clothing"},
+    def test_generate_hierarchy_joins_when_short(self):
+        gen = SelectorGenerator()
+        # 用很短的标签让最后选择器 <=3 字符，触发拼接
+        path = [
+            {"tag": "div", "classes": ["container"]},
+            {"tag": "li"},  # "li" 只有 2 字符
         ]
-        try:
-            classified = service.ai_classify_products(products)
-            assert isinstance(classified, list)
-            assert len(classified) == 2
-        except Exception:
-            pass
+        selector = gen.generate_selector_hierarchy(path)
+        # li <=3，所以会拼接 div.container > li
+        assert ">" in selector
+        assert "li" in selector
 
-    def test_ai_quality_check(self):
-        """测试AI质量检查"""
-        service = AIScraperService()
-        product = {
-            "name": "Test Product",
-            "price": "29.99",
-            "description": "Great product with many features.",
-            "images": ["https://example.com/1.jpg"],
-        }
-        try:
-            quality = service.ai_quality_check(product)
-            assert isinstance(quality, dict)
-            assert "score" in quality
-            assert "issues" in quality
-        except Exception:
-            pass
+    def test_generate_hierarchy_single(self):
+        gen = SelectorGenerator()
+        path = [{"tag": "div", "id": "main"}]
+        selector = gen.generate_selector_hierarchy(path)
+        assert selector == "div#main"
 
-    def test_get_instance(self):
-        """测试单例模式"""
-        s1 = get_ai_scraper_service()
-        s2 = get_ai_scraper_service()
-        assert s1 is s2
+    def test_generate_hierarchy_empty(self):
+        gen = SelectorGenerator()
+        selector = gen.generate_selector_hierarchy([])
+        assert selector == ""
 
-    def test_ai_generate_mapping(self):
-        """测试AI生成字段映射"""
-        service = AIScraperService()
-        try:
-            mapping = service.ai_generate_mapping(
-                source_fields=["title", "cost", "pic"],
-                target_fields=["name", "price", "image"]
-            )
-            assert isinstance(mapping, dict)
-            assert len(mapping) > 0
-        except Exception:
-            pass
 
-    def test_ai_detect_language(self):
-        """测试AI检测语言"""
-        service = AIScraperService()
-        try:
-            lang = service.ai_detect_language("Hello World")
-            assert isinstance(lang, str)
-            assert len(lang) == 2
-        except Exception:
-            pass
+class TestWoocommerceSelectors:
+    """WOOCOMMERCE_SELECTORS 测试"""
 
-    def test_ai_detect_currency(self):
-        """测试AI检测货币"""
-        service = AIScraperService()
-        try:
-            currency = service.ai_detect_currency("$29.99")
-            assert isinstance(currency, str)
-            assert len(currency) == 3
-        except Exception:
-            pass
+    def test_has_required_selectors(self):
+        assert "title" in WOOCOMMERCE_SELECTORS
+        assert "price" in WOOCOMMERCE_SELECTORS
+        assert "description" in WOOCOMMERCE_SELECTORS
+        assert "sku" in WOOCOMMERCE_SELECTORS
+
+    def test_title_is_required(self):
+        assert WOOCOMMERCE_SELECTORS["title"].required is True
+
+    def test_categories_is_multiple(self):
+        assert WOOCOMMERCE_SELECTORS["categories"].multiple is True
+
+    def test_tags_is_multiple(self):
+        assert WOOCOMMERCE_SELECTORS["tags"].multiple is True
+
+
+class TestCreateWoocommerceScraper:
+    """create_woocommerce_scraper 工厂函数测试"""
+
+    def test_creates_scraper(self):
+        scraper = create_woocommerce_scraper("https://example.com/shop")
+        assert isinstance(scraper, ProductScraper)
+        assert scraper.config.start_url == "https://example.com/shop"
+
+    def test_uses_woocommerce_selectors(self):
+        scraper = create_woocommerce_scraper("https://example.com/shop")
+        assert "title" in scraper.config.product_selectors
+        assert scraper.config.product_selectors["title"].selector == ".product_title"
+
+    def test_with_custom_kwargs(self):
+        scraper = create_woocommerce_scraper(
+            "https://example.com/shop",
+            max_pages=5,
+            use_proxy=False,
+        )
+        assert scraper.config.max_pages == 5
+        assert scraper.config.use_proxy is False
+
+    def test_has_pagination_selectors(self):
+        scraper = create_woocommerce_scraper("https://example.com/shop")
+        assert scraper.config.product_link_selector == ".woocommerce-LoopProduct-link"
+        assert scraper.config.next_page_selector == ".next.page-numbers"
+
+
+def _make_async_page(query_selector_result=None, query_selector_all_result=None):
+    """构造一个支持 await 的 mock page"""
+    page = MagicMock()
+    page.query_selector = AsyncMock(return_value=query_selector_result)
+    page.query_selector_all = AsyncMock(return_value=query_selector_all_result or [])
+    return page
+
+
+def _make_async_element(inner_text_value=None, attribute_value=None):
+    """构造一个支持 await 的 mock element"""
+    element = MagicMock()
+    element.inner_text = AsyncMock(return_value=inner_text_value)
+    element.get_attribute = AsyncMock(return_value=attribute_value)
+    return element
+
+
+class TestProductScraperExtractText:
+    """ProductScraper._extract_text 测试（使用 mock page）"""
+
+    @pytest.mark.asyncio
+    async def test_extract_text_with_mock(self):
+        config = ScrapingConfig(start_url="https://example.com", use_proxy=False, use_stealth=False)
+        scraper = ProductScraper(config)
+        element = _make_async_element(inner_text_value="  Hello World  ")
+        scraper.page = _make_async_page(query_selector_result=element)
+
+        result = await scraper._extract_text(".title")
+        assert result == "Hello World"
+
+    @pytest.mark.asyncio
+    async def test_extract_text_no_element(self):
+        config = ScrapingConfig(start_url="https://example.com", use_proxy=False, use_stealth=False)
+        scraper = ProductScraper(config)
+        scraper.page = _make_async_page(query_selector_result=None)
+
+        result = await scraper._extract_text(".nonexistent")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_extract_text_with_attribute(self):
+        config = ScrapingConfig(start_url="https://example.com", use_proxy=False, use_stealth=False)
+        scraper = ProductScraper(config)
+        element = _make_async_element(attribute_value="12345")
+        scraper.page = _make_async_page(query_selector_result=element)
+
+        result = await scraper._extract_text(".sku", attribute="data-sku")
+        assert result == "12345"
+
+    @pytest.mark.asyncio
+    async def test_extract_text_with_regex(self):
+        config = ScrapingConfig(start_url="https://example.com", use_proxy=False, use_stealth=False)
+        scraper = ProductScraper(config)
+        element = _make_async_element(inner_text_value="Price: $29.99")
+        scraper.page = _make_async_page(query_selector_result=element)
+
+        result = await scraper._extract_text(".price", regex=r"\$(\d+\.\d+)")
+        assert result == "29.99"
+
+    @pytest.mark.asyncio
+    async def test_extract_all_with_mock(self):
+        config = ScrapingConfig(start_url="https://example.com", use_proxy=False, use_stealth=False)
+        scraper = ProductScraper(config)
+        elem1 = _make_async_element(inner_text_value="Cat 1")
+        elem2 = _make_async_element(inner_text_value="Cat 2")
+        scraper.page = _make_async_page(query_selector_all_result=[elem1, elem2])
+
+        results = await scraper._extract_all(".categories a")
+        assert results == ["Cat 1", "Cat 2"]
+
+    @pytest.mark.asyncio
+    async def test_extract_all_empty(self):
+        config = ScrapingConfig(start_url="https://example.com", use_proxy=False, use_stealth=False)
+        scraper = ProductScraper(config)
+        scraper.page = _make_async_page(query_selector_all_result=[])
+
+        results = await scraper._extract_all(".nonexistent")
+        assert results == []
