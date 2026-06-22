@@ -296,6 +296,261 @@ class GoogleTranslationEngine(TranslationEngineBase):
         return bool(self.api_key)
 
 
+class DeepLTranslationEngine(TranslationEngineBase):
+    """DeepL翻译引擎"""
+    
+    def __init__(self, api_key: Optional[str] = None):
+        super().__init__()
+        self.api_key = api_key or settings.DEEPL_API_KEY
+        self.base_url = "https://api.deepl.com/v2/translate"
+        self.free_base_url = "https://api-free.deepl.com/v2/translate"
+        self._is_free = False
+    
+    async def translate(
+        self,
+        text: str,
+        source_lang: str = "auto",
+        target_lang: str = "zh-CN",
+        **kwargs
+    ) -> TranslationResult:
+        import httpx
+        
+        start_time = time.time()
+        
+        # DeepL语言代码转换
+        deepl_target = self._convert_lang_code(target_lang)
+        deepl_source = self._convert_lang_code(source_lang) if source_lang != "auto" else None
+        
+        data = {
+            "text": text,
+            "target_lang": deepl_target,
+        }
+        
+        if deepl_source:
+            data["source_lang"] = deepl_source
+        
+        # 表单ality参数（正式/非正式）
+        if "formality" in kwargs:
+            data["formality"] = kwargs["formality"]
+        
+        # 选择API端点
+        url = self.free_base_url if self._is_free else self.base_url
+        
+        headers = {
+            "Authorization": f"DeepL-Auth-Key {self.api_key}",
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, data=data, headers=headers)
+            response.raise_for_status()
+            result_data = response.json()
+        
+        translations = result_data.get("translations", [])
+        if not translations:
+            raise Exception("No translation returned")
+        
+        translated_text = translations[0]["text"]
+        detected_lang = translations[0].get("detected_source_language", source_lang)
+        
+        return TranslationResult(
+            source_text=text,
+            translated_text=translated_text,
+            source_language=self._convert_lang_code_back(detected_lang),
+            target_language=target_lang,
+            engine=TranslationEngine.DEEPL,
+            quality_score=0.92,
+            translation_time=time.time() - start_time
+        )
+    
+    def _convert_lang_code(self, lang: str) -> str:
+        """转换语言代码为DeepL格式"""
+        lang_map = {
+            "zh-CN": "ZH",
+            "zh-TW": "ZH",
+            "en": "EN",
+            "en-US": "EN",
+            "en-GB": "EN",
+            "de": "DE",
+            "fr": "FR",
+            "es": "ES",
+            "it": "IT",
+            "pt": "PT",
+            "pt-BR": "PT-BR",
+            "pt-PT": "PT-PT",
+            "nl": "NL",
+            "pl": "PL",
+            "ru": "RU",
+            "ja": "JA",
+            "ko": "KO",
+            "hu": "HU",
+            "ro": "RO",
+            "cs": "CS",
+            "sk": "SK",
+            "bg": "BG",
+            "hr": "HR",
+            "da": "DA",
+            "fi": "FI",
+            "el": "EL",
+            "et": "ET",
+            "lv": "LV",
+            "lt": "LT",
+            "mt": "MT",
+            "sk": "SK",
+            "sl": "SL",
+            "sv": "SV",
+            "tr": "TR",
+            "uk": "UK",
+        }
+        return lang_map.get(lang, lang.upper())
+    
+    def _convert_lang_code_back(self, lang: str) -> str:
+        """将DeepL语言代码转换回标准格式"""
+        lang_map = {
+            "ZH": "zh-CN",
+            "EN": "en",
+            "DE": "de",
+            "FR": "fr",
+            "ES": "es",
+            "IT": "it",
+            "PT": "pt",
+            "NL": "nl",
+            "PL": "pl",
+            "RU": "ru",
+            "JA": "ja",
+            "KO": "ko",
+            "HU": "hu",
+            "RO": "ro",
+        }
+        return lang_map.get(lang, lang.lower())
+    
+    def is_available(self) -> bool:
+        return bool(self.api_key)
+
+
+class TranslationMemory:
+    """翻译记忆库"""
+    
+    def __init__(self, max_entries: int = 100000):
+        self.max_entries = max_entries
+        self.entries: Dict[str, Dict] = {}  # {hash: {source, target, source_lang, target_lang, count, last_used}}
+    
+    def _get_key(self, source_text: str, source_lang: str, target_lang: str) -> str:
+        """生成记忆键"""
+        key_str = f"{source_text.strip().lower()}_{source_lang}_{target_lang}"
+        return hashlib.md5(key_str.encode()).hexdigest()
+    
+    def lookup(self, text: str, source_lang: str, target_lang: str) -> Optional[str]:
+        """查找翻译记忆
+        
+        Returns:
+            匹配的翻译文本，未找到返回None
+        """
+        key = self._get_key(text, source_lang, target_lang)
+        if key in self.entries:
+            entry = self.entries[key]
+            entry["count"] += 1
+            entry["last_used"] = time.time()
+            return entry["target"]
+        return None
+    
+    def add(self, source_text: str, target_text: str, source_lang: str, target_lang: str):
+        """添加翻译记忆"""
+        key = self._get_key(source_text, source_lang, target_lang)
+        
+        if key in self.entries:
+            self.entries[key]["count"] += 1
+            self.entries[key]["last_used"] = time.time()
+        else:
+            # 如果超过最大条目数，删除最久未使用的
+            if len(self.entries) >= self.max_entries:
+                oldest_key = min(self.entries, key=lambda k: self.entries[k]["last_used"])
+                del self.entries[oldest_key]
+            
+            self.entries[key] = {
+                "source": source_text,
+                "target": target_text,
+                "source_lang": source_lang,
+                "target_lang": target_lang,
+                "count": 1,
+                "last_used": time.time()
+            }
+    
+    def add_batch(self, entries: List[Tuple[str, str]], source_lang: str, target_lang: str):
+        """批量添加翻译记忆"""
+        for source, target in entries:
+            self.add(source, target, source_lang, target_lang)
+    
+    def get_stats(self) -> Dict:
+        """获取统计信息"""
+        return {
+            "total_entries": len(self.entries),
+            "max_entries": self.max_entries
+        }
+
+
+class TranslationQualityEvaluator:
+    """翻译质量评估器"""
+    
+    def __init__(self):
+        pass
+    
+    def evaluate(self, source_text: str, translated_text: str, 
+                 source_lang: str, target_lang: str) -> float:
+        """评估翻译质量
+        
+        Returns:
+            质量分数 0.0 - 1.0
+        """
+        score = 0.5  # 基础分
+        
+        # 1. 长度合理性检查
+        source_len = len(source_text)
+        target_len = len(translated_text)
+        
+        if source_len > 0 and target_len > 0:
+            ratio = target_len / source_len
+            # 合理的长度比例范围 0.5 - 2.0
+            if 0.5 <= ratio <= 2.0:
+                score += 0.15
+            elif 0.3 <= ratio <= 3.0:
+                score += 0.05
+        
+        # 2. 完整性检查（关键词保留）
+        # 检查数字是否保留
+        import re
+        source_numbers = set(re.findall(r'\d+', source_text))
+        target_numbers = set(re.findall(r'\d+', translated_text))
+        if source_numbers.issubset(target_numbers):
+            score += 0.1
+        
+        # 3. 格式保持检查
+        # 检查标点符号
+        source_punct = len(re.findall(r'[.,!?;:]', source_text))
+        target_punct = len(re.findall(r'[.,!?;:]', translated_text))
+        if abs(source_punct - target_punct) <= 2:
+            score += 0.1
+        
+        # 4. 无空翻译
+        if translated_text.strip():
+            score += 0.1
+        
+        # 5. 无乱码检测
+        if not self._has_garbled_chars(translated_text):
+            score += 0.05
+        
+        return min(1.0, max(0.0, score))
+    
+    def _has_garbled_chars(self, text: str) -> bool:
+        """检测是否有乱码字符"""
+        # 检查是否有替换字符或控制字符
+        garbled_patterns = ['�', '□', '?', '\ufffd']
+        for pattern in garbled_patterns:
+            if pattern in text:
+                return True
+        return False
+
+
 class TranslationService:
     """翻译服务"""
     
@@ -303,15 +558,23 @@ class TranslationService:
         self.engines: Dict[str, TranslationEngineBase] = {}
         self.term_manager = TranslationTermManager()
         self.cache = TranslationCache()
+        self.translation_memory = TranslationMemory()
+        self.quality_evaluator = TranslationQualityEvaluator()
+        self._engine_priority = ["deepl", "google", "ai"]  # 引擎优先级
         self._init_engines()
     
     def _init_engines(self):
         """初始化翻译引擎"""
-        # AI翻译引擎（默认）
+        # AI翻译引擎（默认，总是可用）
         self.engines["ai"] = AITranslationEngine()
         
+        # DeepL翻译引擎（需要API Key）
+        if hasattr(settings, 'DEEPL_API_KEY') and settings.DEEPL_API_KEY:
+            self.engines["deepl"] = DeepLTranslationEngine()
+        
         # Google翻译引擎（需要API Key）
-        # self.engines["google"] = GoogleTranslationEngine()
+        if hasattr(settings, 'GOOGLE_TRANSLATE_API_KEY') and settings.GOOGLE_TRANSLATE_API_KEY:
+            self.engines["google"] = GoogleTranslationEngine(settings.GOOGLE_TRANSLATE_API_KEY)
     
     def get_engine(self, engine_name: str) -> Optional[TranslationEngineBase]:
         """获取翻译引擎"""
@@ -326,10 +589,13 @@ class TranslationService:
         text: str,
         source_lang: str = "auto",
         target_lang: str = "zh-CN",
-        engine: str = "ai",
+        engine: str = "auto",
         use_cache: bool = True,
+        use_memory: bool = True,
         apply_terms: bool = True,
         polish: bool = False,
+        auto_fallback: bool = True,
+        evaluate_quality: bool = False,
         **kwargs
     ) -> TranslationResult:
         """翻译文本
@@ -338,10 +604,13 @@ class TranslationService:
             text: 源文本
             source_lang: 源语言
             target_lang: 目标语言
-            engine: 翻译引擎
+            engine: 翻译引擎，"auto"表示自动选择最优引擎
             use_cache: 是否使用缓存
+            use_memory: 是否使用翻译记忆库
             apply_terms: 是否应用术语库
             polish: 是否进行AI润色
+            auto_fallback: 是否自动降级
+            evaluate_quality: 是否评估翻译质量
         """
         if not text or not text.strip():
             return TranslationResult(
@@ -349,7 +618,7 @@ class TranslationService:
                 translated_text=text,
                 source_language=source_lang,
                 target_language=target_lang,
-                engine=TranslationEngine(engine),
+                engine=TranslationEngine.AI,
                 quality_score=1.0
             )
         
@@ -360,13 +629,64 @@ class TranslationService:
                 logger.debug(f"Cache hit for translation")
                 return cached
         
-        # 获取引擎
-        translation_engine = self.get_engine(engine)
-        if not translation_engine:
-            raise ValueError(f"Unknown translation engine: {engine}")
+        # 检查翻译记忆库
+        if use_memory and source_lang != "auto":
+            memory_result = self.translation_memory.lookup(text, source_lang, target_lang)
+            if memory_result:
+                logger.debug(f"Translation memory hit")
+                result = TranslationResult(
+                    source_text=text,
+                    translated_text=memory_result,
+                    source_language=source_lang,
+                    target_language=target_lang,
+                    engine=TranslationEngine.AI,
+                    quality_score=0.95
+                )
+                if use_cache:
+                    self.cache.set(result, engine)
+                return result
         
-        # 执行翻译
-        result = await translation_engine.translate(text, source_lang, target_lang, **kwargs)
+        # 确定要使用的引擎列表
+        if engine == "auto":
+            # 按优先级选择可用引擎
+            engines_to_try = [e for e in self._engine_priority if e in self.engines and self.engines[e].is_available()]
+            if not engines_to_try:
+                engines_to_try = ["ai"]  # 兜底用AI
+        else:
+            engines_to_try = [engine]
+            if auto_fallback:
+                # 添加降级引擎
+                for e in self._engine_priority:
+                    if e not in engines_to_try and e in self.engines and self.engines[e].is_available():
+                        engines_to_try.append(e)
+        
+        # 尝试翻译，支持自动降级
+        result = None
+        last_error = None
+        
+        for engine_name in engines_to_try:
+            try:
+                translation_engine = self.engines[engine_name]
+                result = await translation_engine.translate(text, source_lang, target_lang, **kwargs)
+                logger.debug(f"Translation successful with engine: {engine_name}")
+                break
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Translation engine {engine_name} failed: {e}")
+                if not auto_fallback:
+                    raise
+        
+        if result is None:
+            # 所有引擎都失败了，使用简单的文本复制作为最后兜底
+            logger.error(f"All translation engines failed, using fallback: {last_error}")
+            result = TranslationResult(
+                source_text=text,
+                translated_text=text,
+                source_language=source_lang,
+                target_language=target_lang,
+                engine=TranslationEngine.AI,
+                quality_score=0.0
+            )
         
         # 应用术语库
         if apply_terms:
@@ -381,6 +701,17 @@ class TranslationService:
         # AI润色
         if polish:
             result = await self.polish_translation(result)
+        
+        # 质量评估
+        if evaluate_quality and source_lang != "auto":
+            quality_score = self.quality_evaluator.evaluate(
+                text, result.translated_text, source_lang, target_lang
+            )
+            result.quality_score = quality_score
+        
+        # 添加到翻译记忆库
+        if use_memory and source_lang != "auto" and result.quality_score >= 0.7:
+            self.translation_memory.add(text, result.translated_text, source_lang, target_lang)
         
         # 存入缓存
         if use_cache:
@@ -524,6 +855,7 @@ class TranslationService:
             "engines": self.get_available_engines(),
             "cache_size": self.cache.size,
             "terms_count": self.term_manager.get_terms_count(),
+            "translation_memory": self.translation_memory.get_stats(),
         }
 
 
