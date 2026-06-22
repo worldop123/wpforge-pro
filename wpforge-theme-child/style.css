@@ -1,0 +1,34 @@
+/*
+Theme Name: WPForge Theme Child
+Theme URI: https://wpforge.io/theme
+Author: WPForge Team
+Author URI: https://wpforge.io
+Description: Child theme for WPForge Theme - AI-Driven Ultra-Lightweight WordPress Theme
+Version: 1.0.0
+License: GNU General Public License v3 or later
+License URI: http://www.gnu.org/licenses/gpl-3.0.html
+Text Domain: wpforge-theme-child
+Domain Path: /languages
+Tags: ultra-lightweight, seo-optimized, fast, responsive, customizer, woocommerce, elementor, bricks, page-builder
+Template: wpforge-theme
+*/
+
+/* ==========================================================================
+   Child Theme Custom Styles
+   Add your custom styles below this line
+   ========================================================================== */
+
+/* Example: Customize primary color */
+/*
+:root {
+    --wpforge-color-primary: #your-color;
+    --wpforge-color-primary-hover: #your-hover-color;
+}
+*/
+
+/* Example: Custom header styles */
+/*
+.site-header {
+    background-color: #your-color;
+}
+*/

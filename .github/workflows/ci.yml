@@ -1,0 +1,259 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.11, 3.12]
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: wpforge
+          POSTGRES_PASSWORD: wpforge
+          POSTGRES_DB: wpforge_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install dependencies
+      working-directory: ./backend
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov pytest-asyncio httpx
+
+    - name: Lint with flake8
+      working-directory: ./backend
+      run: |
+        pip install flake8
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+    - name: Type check with mypy
+      working-directory: ./backend
+      run: |
+        pip install mypy
+        mypy app/ --ignore-missing-imports --no-strict-optional || true
+
+    - name: Run tests with coverage
+      working-directory: ./backend
+      env:
+        DATABASE_URL: postgresql://wpforge:wpforge@localhost:5432/wpforge_test
+        REDIS_URL: redis://localhost:6379/0
+        TESTING: true
+      run: |
+        pytest tests/ -v --cov=app --cov-report=xml --cov-report=html --cov-fail-under=70
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./backend/coverage.xml
+        flags: backend
+        name: codecov-umbrella
+        fail_ci_if_error: false
+
+    - name: Upload test results
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-results-${{ matrix.python-version }}
+        path: |
+          backend/coverage.xml
+          backend/htmlcov/
+        retention-days: 7
+
+  build-backend:
+    name: Build Backend Docker Image
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build backend image
+      working-directory: ./backend
+      run: |
+        docker build -t wpforge-backend:latest .
+
+  build-frontend:
+    name: Build Frontend
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+
+    - name: Install dependencies
+      working-directory: ./frontend
+      run: |
+        npm ci
+
+    - name: Build frontend
+      working-directory: ./frontend
+      run: |
+        npm run build
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: frontend-build
+        path: frontend/dist/
+        retention-days: 7
+
+  build-theme:
+    name: Build WordPress Theme
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Create theme package
+      run: |
+        cd wpforge-theme
+        zip -r ../wpforge-theme.zip . -x "*.git*" "*.DS_Store"
+
+    - name: Upload theme package
+      uses: actions/upload-artifact@v4
+      with:
+        name: wpforge-theme
+        path: wpforge-theme.zip
+        retention-days: 30
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Run security scan
+      working-directory: ./backend
+      run: |
+        pip install safety
+        safety check --full-report || true
+
+    - name: Run Bandit security scan
+      working-directory: ./backend
+      run: |
+        pip install bandit
+        bandit -r app/ -f json -o bandit-report.json || true
+
+    - name: Upload security report
+      uses: actions/upload-artifact@v4
+      with:
+        name: security-report
+        path: backend/bandit-report.json
+        retention-days: 7
+
+  docs:
+    name: Build Documentation
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Check documentation
+      run: |
+        echo "Checking documentation files..."
+        test -f README.md
+        test -f INSTALL.md
+        test -f USER_GUIDE.md
+        test -f docs/API.md
+        test -f docs/DEVELOPMENT.md
+
+    - name: Upload docs
+      uses: actions/upload-artifact@v4
+      with:
+        name: documentation
+        path: |
+          README.md
+          INSTALL.md
+          USER_GUIDE.md
+          docs/
+        retention-days: 7
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build-backend, build-frontend, build-theme, docs]
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          wpforge-theme.zip
+        body: |
+          ## WPForge ${{ github.ref_name }}
+          
+          ### Features
+          - New features added in this release
+          
+          ### Improvements
+          - Performance improvements
+          
+          ### Bug Fixes
+          - Various bug fixes
+          
+          ### Documentation
+          - Updated documentation
+          
+          **Full Changelog**: https://github.com/${{ github.repository }}/compare/...${{ github.ref_name }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
