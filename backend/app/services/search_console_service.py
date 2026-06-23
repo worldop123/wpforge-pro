@@ -8,6 +8,10 @@ import hashlib
 import base64
 import json
 import random
+import re
+import urllib.request
+import urllib.parse
+import urllib.error
 from typing import Dict, Any, List, Optional, Callable, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
@@ -1266,6 +1270,8 @@ class BaiduWebmasterService:
     def get_indexed_count(self, site_url: str) -> Dict[str, Any]:
         """查询百度收录量
 
+        通过百度搜索 site: 查询解析收录页数，作为收录量参考。
+
         Args:
             site_url: 站点URL
 
@@ -1280,13 +1286,79 @@ class BaiduWebmasterService:
                 "indexed_count": 0,
             }
         self._rate_limiter.wait()
-        # 模拟返回收录量
+
+        # 真实查询收录量
+        try:
+            indexed_count = self._fetch_indexed_count(site_url)
+        except Exception as e:
+            logger.warning(f"百度收录量查询失败: {site_url}, 错误: {e}")
+            return {
+                "success": False,
+                "message": f"收录量查询失败: {e}",
+                "error_code": "query_failed",
+                "indexed_count": 0,
+                "query_time": datetime.now().isoformat(),
+            }
+
         return {
             "success": True,
             "site_url": site_url,
-            "indexed_count": random.randint(100, 10000),
+            "indexed_count": indexed_count,
             "query_time": datetime.now().isoformat(),
         }
+
+    def _fetch_indexed_count(self, site_url: str) -> int:
+        """通过百度搜索 site: 查询获取收录页数
+
+        Args:
+            site_url: 站点URL
+
+        Returns:
+            收录页数
+
+        Raises:
+            RuntimeError: 查询失败时抛出
+        """
+        domain = self._extract_domain(site_url)
+        if not domain:
+            raise RuntimeError(f"无法从URL提取域名: {site_url}")
+
+        query = urllib.parse.quote(f"site:{domain}")
+        search_url = f"https://www.baidu.com/s?wd={query}&rn=10"
+
+        try:
+            req = urllib.request.Request(search_url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) "
+                              "Chrome/120.0.0.0 Safari/537.36",
+                "Accept-Language": "zh-CN,zh;q=0.9",
+            })
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                html = resp.read().decode("utf-8", errors="ignore")
+        except Exception as e:
+            raise RuntimeError(f"百度搜索请求失败: {e}") from e
+
+        # 解析百度搜索结果数量（格式：百度为您找到相关结果约1,234个）
+        count = 0
+        count_match = re.search(r'找到相关结果[约]?([\d,]+)个', html)
+        if count_match:
+            count = int(count_match.group(1).replace(",", ""))
+        else:
+            # 兼容其他格式
+            count_match = re.search(r'([\d,]+)\s*(?:条结果|个结果|results)', html, re.IGNORECASE)
+            if count_match:
+                count = int(count_match.group(1).replace(",", ""))
+
+        return count
+
+    @staticmethod
+    def _extract_domain(url: str) -> str:
+        """从URL中提取域名"""
+        try:
+            parsed = urllib.parse.urlparse(url)
+            return parsed.netloc.lower()
+        except Exception:
+            return ""
 
     def get_indexing_status(self, url: str) -> IndexingResult:
         """获取百度收录状态

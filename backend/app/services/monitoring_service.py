@@ -8,10 +8,19 @@ import socket
 import asyncio
 import hashlib
 import datetime
+import re
+import json
+import smtplib
+import urllib.request
+import urllib.parse
+import urllib.error
+from email.mime.text import MIMEText
+from email.utils import formatdate
 from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from app.core.logging import get_logger
+from app.core.config import settings
 
 logger = get_logger(__name__)
 
@@ -892,21 +901,21 @@ class ContentChangeMonitor:
 
         Args:
             url: 网站URL
-            content: 页面内容（None时模拟获取）
+            content: 页面内容（None时自动抓取目标URL）
 
         Returns:
             内容变化结果
         """
-        # 模拟获取内容
+        # 自动抓取目标URL的页面内容
         if content is None:
-            content = f"simulated-content-{url}-{int(time.time() / 3600)}"
+            content = self._fetch_url_content(url)
 
         new_hash = hashlib.md5(content.encode()).hexdigest()
         old_hash = self._content_hashes.get(url, "")
 
         if old_hash:
             changed = new_hash != old_hash
-            # 简单的相似度计算（基于hash）
+            # 基于内容文本的相似度计算
             similarity = 1.0 if not changed else self._calculate_similarity(old_hash, new_hash)
         else:
             changed = False
@@ -927,6 +936,29 @@ class ContentChangeMonitor:
             new_hash=new_hash,
             message=message,
         )
+
+    def _fetch_url_content(self, url: str) -> str:
+        """抓取目标URL的页面内容
+
+        Args:
+            url: 目标URL
+
+        Returns:
+            页面HTML文本
+
+        Raises:
+            RuntimeError: 抓取失败时抛出
+        """
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "WPForge-Monitor/1.0"}
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return resp.read().decode("utf-8", errors="ignore")
+        except Exception as e:
+            logger.warning(f"抓取页面内容失败: {url}, 错误: {e}")
+            raise RuntimeError(f"无法获取页面内容: {url}") from e
 
     def _calculate_similarity(self, hash1: str, hash2: str) -> float:
         """计算两个hash的相似度（简化实现）"""
@@ -967,9 +999,8 @@ class KeywordRankingMonitor:
         key = f"{search_engine}:{keyword}:{url}"
         history = self._rankings.get(key, [])
 
-        # 模拟获取排名
-        import random as _random
-        new_position = _random.randint(1, 100)
+        # 真实获取关键词排名
+        new_position = self._fetch_ranking(keyword, url, search_engine)
 
         previous_position = history[-1].position if history else None
         change = (previous_position - new_position) if previous_position else 0
@@ -1002,6 +1033,112 @@ class KeywordRankingMonitor:
 
         return result
 
+    def _fetch_ranking(self, keyword: str, url: str, search_engine: str) -> int:
+        """从搜索引擎获取关键词排名
+
+        优先使用Google Custom Search API（需配置GOOGLE_API_KEY和GOOGLE_CSE_CX），
+        否则爬取搜索引擎结果页解析目标URL所在位置。
+
+        Args:
+            keyword: 关键词
+            url: 站点URL
+            search_engine: 搜索引擎（google/bing/baidu）
+
+        Returns:
+            排名位置（1-based），未出现在结果中返回0
+
+        Raises:
+            RuntimeError: 获取排名失败时抛出
+        """
+        target_domain = self._extract_domain(url)
+
+        # 优先使用Google Custom Search API
+        api_key = getattr(settings, "GOOGLE_API_KEY", None)
+        cx = getattr(settings, "GOOGLE_CSE_CX", None)
+        if search_engine == "google" and api_key and cx:
+            return self._fetch_ranking_via_google_cse(keyword, target_domain, api_key, cx)
+
+        # 爬取搜索引擎结果页
+        return self._fetch_ranking_via_scraping(keyword, target_domain, search_engine)
+
+    def _fetch_ranking_via_google_cse(self, keyword: str, target_domain: str,
+                                       api_key: str, cx: str) -> int:
+        """通过Google Custom Search API获取排名"""
+        api_url = (
+            "https://www.googleapis.com/customsearch/v1"
+            f"?key={urllib.parse.quote(api_key)}"
+            f"&cx={urllib.parse.quote(cx)}"
+            f"&q={urllib.parse.quote(keyword)}"
+            "&num=10"
+        )
+        try:
+            req = urllib.request.Request(api_url, headers={"User-Agent": "WPForge-Monitor/1.0"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+        except Exception as e:
+            logger.warning(f"Google CSE查询失败: {keyword}, 错误: {e}")
+            raise RuntimeError(f"Google CSE查询失败: {keyword}") from e
+
+        items = data.get("items", [])
+        for idx, item in enumerate(items, start=1):
+            link = item.get("link", "")
+            if target_domain and target_domain in link:
+                return idx
+        return 0
+
+    def _fetch_ranking_via_scraping(self, keyword: str, target_domain: str,
+                                     search_engine: str) -> int:
+        """通过爬取搜索引擎结果页获取排名"""
+        search_urls = {
+            "google": "https://www.google.com/search?q={query}&num=100",
+            "bing": "https://www.bing.com/search?q={query}&count=50",
+            "baidu": "https://www.baidu.com/s?wd={query}&rn=50",
+        }
+        template = search_urls.get(search_engine, search_urls["google"])
+        query = urllib.parse.quote(keyword)
+        search_url = template.format(query=query)
+
+        try:
+            req = urllib.request.Request(search_url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) "
+                              "Chrome/120.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
+            })
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                html = resp.read().decode("utf-8", errors="ignore")
+        except Exception as e:
+            logger.warning(f"获取关键词排名失败: {keyword}, 错误: {e}")
+            raise RuntimeError(f"无法获取关键词排名: {keyword}") from e
+
+        # 解析搜索结果中的链接，查找目标域名所在位置
+        se_domains = ("google.com", "googleapis.com", "bing.com", "baidu.com",
+                       "microsoft.com", "gstatic.com")
+        link_pattern = re.compile(r'href="(https?://[^"]+)"')
+        links = link_pattern.findall(html)
+
+        position = 0
+        count = 0
+        for link in links:
+            # 跳过搜索引擎自身的链接
+            if any(se in link for se in se_domains):
+                continue
+            count += 1
+            if target_domain and target_domain in link:
+                position = count
+                break
+
+        return position
+
+    @staticmethod
+    def _extract_domain(url: str) -> str:
+        """从URL中提取域名"""
+        try:
+            parsed = urllib.parse.urlparse(url)
+            return parsed.netloc.lower()
+        except Exception:
+            return ""
+
     def get_history(self, keyword: str, url: str, search_engine: str = "google") -> List[KeywordRankingResult]:
         """获取关键词排名历史"""
         key = f"{search_engine}:{keyword}:{url}"
@@ -1023,11 +1160,13 @@ class BacklinkMonitor:
         Returns:
             外链监控结果
         """
-        import random as _random
         history = self._backlinks.get(url, [])
 
-        # 模拟获取外链数
-        new_count = _random.randint(50, 5000)
+        # 真实获取外链数据
+        stats = self._fetch_backlink_count(url)
+        new_count = stats.get("backlink_count", 0)
+        new_referring_domains = stats.get("referring_domains", 0)
+
         previous_count = history[-1].backlink_count if history else None
         change = (new_count - previous_count) if previous_count else 0
 
@@ -1046,7 +1185,7 @@ class BacklinkMonitor:
             backlink_count=new_count,
             previous_count=previous_count,
             change=change,
-            referring_domains=_random.randint(10, new_count // 2),
+            referring_domains=new_referring_domains,
             message=message,
         )
 
@@ -1056,6 +1195,103 @@ class BacklinkMonitor:
         self._backlinks[url] = history
 
         return result
+
+    def _fetch_backlink_count(self, url: str) -> Dict[str, int]:
+        """获取外链数量
+
+        优先调用第三方外链分析API（需配置BACKLINK_API_KEY和BACKLINK_API_PROVIDER），
+        否则通过搜索引擎 site: 查询估算收录页数作为外链参考。
+
+        Args:
+            url: 站点URL
+
+        Returns:
+            包含 backlink_count 和 referring_domains 的字典
+
+        Raises:
+            RuntimeError: 获取外链数据失败时抛出
+        """
+        api_key = getattr(settings, "BACKLINK_API_KEY", None)
+        provider = getattr(settings, "BACKLINK_API_PROVIDER", "auto")
+
+        if api_key and provider != "auto":
+            return self._fetch_backlinks_via_api(url, api_key, provider)
+
+        # 通过搜索引擎 site: 查询估算
+        return self._fetch_backlinks_via_search(url)
+
+    def _fetch_backlinks_via_api(self, url: str, api_key: str, provider: str) -> Dict[str, int]:
+        """通过第三方API获取外链数据"""
+        domain = self._extract_domain(url)
+        if provider == "ahrefs":
+            api_url = f"https://apiv2.ahrefs.com/?token={api_key}&from=metrics&target={urllib.parse.quote(domain)}&mode=domain"
+        elif provider == "semrush":
+            api_url = f"https://api.semrush.com/?key={api_key}&type=backlinks&target={urllib.parse.quote(domain)}&target_type=root_domain"
+        else:
+            raise RuntimeError(f"不支持的外链API提供商: {provider}")
+
+        try:
+            req = urllib.request.Request(api_url, headers={"User-Agent": "WPForge-Monitor/1.0"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+        except Exception as e:
+            logger.warning(f"外链API查询失败: {url}, 错误: {e}")
+            raise RuntimeError(f"外链API查询失败: {url}") from e
+
+        # 兼容不同API返回结构
+        backlinks = (
+            data.get("backlinks")
+            or data.get("backlink_count")
+            or data.get("total_backlinks")
+            or 0
+        )
+        referring = (
+            data.get("referring_domains")
+            or data.get("refdomains")
+            or 0
+        )
+        return {"backlink_count": int(backlinks), "referring_domains": int(referring)}
+
+    def _fetch_backlinks_via_search(self, url: str) -> Dict[str, int]:
+        """通过搜索引擎 site: 查询估算外链/收录页数"""
+        domain = self._extract_domain(url)
+        if not domain:
+            raise RuntimeError(f"无法从URL提取域名: {url}")
+
+        query = urllib.parse.quote(f"site:{domain}")
+        search_url = f"https://www.bing.com/search?q={query}&count=10"
+
+        try:
+            req = urllib.request.Request(search_url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) "
+                              "Chrome/120.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
+            })
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                html = resp.read().decode("utf-8", errors="ignore")
+        except Exception as e:
+            logger.warning(f"搜索引擎外链查询失败: {url}, 错误: {e}")
+            raise RuntimeError(f"无法获取外链数据: {url}") from e
+
+        # 解析结果数量（Bing格式：<span class="sb_count">1,234 results</span>）
+        count = 0
+        count_match = re.search(r'([\d,]+)\s*(?:results|条结果|个结果)', html, re.IGNORECASE)
+        if count_match:
+            count = int(count_match.group(1).replace(",", ""))
+
+        # referring_domains 估算为结果数的 1/3（简化估算）
+        referring = max(1, count // 3) if count > 0 else 0
+        return {"backlink_count": count, "referring_domains": referring}
+
+    @staticmethod
+    def _extract_domain(url: str) -> str:
+        """从URL中提取域名"""
+        try:
+            parsed = urllib.parse.urlparse(url)
+            return parsed.netloc.lower()
+        except Exception:
+            return ""
 
     def get_history(self, url: str) -> List[BacklinkResult]:
         """获取外链历史"""
@@ -1077,12 +1313,12 @@ class TrafficMonitor:
         Returns:
             流量统计结果
         """
-        import random as _random
-        visits = _random.randint(100, 10000)
-        unique_visitors = int(visits * _random.uniform(0.6, 0.9))
-        page_views = int(visits * _random.uniform(1.5, 3.0))
-        bounce_rate = round(_random.uniform(0.2, 0.7), 2)
-        avg_session = round(_random.uniform(60, 600), 2)
+        stats = self._fetch_traffic_stats(url)
+        visits = int(stats.get("visits", 0))
+        unique_visitors = int(stats.get("unique_visitors", 0))
+        page_views = int(stats.get("page_views", 0))
+        bounce_rate = float(stats.get("bounce_rate", 0.0))
+        avg_session = float(stats.get("avg_session_duration", 0.0))
 
         result = TrafficResult(
             url=url,
@@ -1101,6 +1337,124 @@ class TrafficMonitor:
         self._traffic[url] = history
 
         return result
+
+    def _fetch_traffic_stats(self, url: str) -> Dict[str, Any]:
+        """获取流量统计数据
+
+        优先调用Google Analytics API（需配置GA_PROPERTY_ID和GA_ACCESS_TOKEN），
+        其次从WordPress站点统计端点拉取（需配置WP_STATS_URL）。
+        无任何凭证时抛出明确异常。
+
+        Args:
+            url: 站点URL
+
+        Returns:
+            流量统计字典，包含 visits/unique_visitors/page_views/bounce_rate/avg_session_duration
+
+        Raises:
+            RuntimeError: 无可用凭证或获取失败时抛出
+        """
+        ga_property_id = getattr(settings, "GA_PROPERTY_ID", None)
+        ga_access_token = getattr(settings, "GA_ACCESS_TOKEN", None)
+
+        if ga_property_id and ga_access_token:
+            return self._fetch_traffic_from_ga(url, ga_property_id, ga_access_token)
+
+        wp_stats_url = getattr(settings, "WP_STATS_URL", None)
+        if wp_stats_url:
+            return self._fetch_traffic_from_wp(url, wp_stats_url)
+
+        raise RuntimeError(
+            "流量统计需要配置Google Analytics凭证(GA_PROPERTY_ID/GA_ACCESS_TOKEN)"
+            "或WordPress站点统计端点(WP_STATS_URL)"
+        )
+
+    def _fetch_traffic_from_ga(self, url: str, property_id: str, access_token: str) -> Dict[str, Any]:
+        """通过Google Analytics Data API获取流量统计"""
+        api_url = f"https://analyticsdata.googleapis.com/v1beta/properties/{property_id}:runReport"
+        payload = json.dumps({
+            "dateRanges": [{"startDate": "30daysAgo", "endDate": "today"}],
+            "metrics": [
+                {"name": "sessions"},
+                {"name": "totalUsers"},
+                {"name": "screenPageViews"},
+                {"name": "bounceRate"},
+                {"name": "averageSessionDuration"},
+            ],
+            "dimensionFilter": {
+                "filter": {
+                    "fieldName": "hostName",
+                    "stringFilter": {"matchType": "EXACT", "value": self._extract_domain(url)},
+                }
+            },
+        }).encode("utf-8")
+
+        try:
+            req = urllib.request.Request(
+                api_url,
+                data=payload,
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                    "User-Agent": "WPForge-Monitor/1.0",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+        except Exception as e:
+            logger.warning(f"Google Analytics查询失败: {url}, 错误: {e}")
+            raise RuntimeError(f"Google Analytics查询失败: {url}") from e
+
+        # 解析GA返回的rows
+        rows = data.get("rows", [])
+        totals = rows[0].get("metricValues", []) if rows else []
+        metric_names = ["sessions", "totalUsers", "screenPageViews", "bounceRate", "averageSessionDuration"]
+        result = {}
+        for name, val in zip(metric_names, totals):
+            raw = val.get("value", "0")
+            try:
+                result[name] = float(raw)
+            except (TypeError, ValueError):
+                result[name] = 0.0
+
+        return {
+            "visits": int(result.get("sessions", 0)),
+            "unique_visitors": int(result.get("totalUsers", 0)),
+            "page_views": int(result.get("screenPageViews", 0)),
+            "bounce_rate": round(result.get("bounceRate", 0.0) / 100, 4) if result.get("bounceRate", 0) > 1 else result.get("bounceRate", 0.0),
+            "avg_session_duration": result.get("averageSessionDuration", 0.0),
+        }
+
+    def _fetch_traffic_from_wp(self, url: str, stats_url: str) -> Dict[str, Any]:
+        """从WordPress站点统计端点拉取流量数据"""
+        try:
+            req = urllib.request.Request(stats_url, headers={
+                "User-Agent": "WPForge-Monitor/1.0",
+                "X-Target-URL": url,
+            })
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+        except Exception as e:
+            logger.warning(f"WP站点统计查询失败: {url}, 错误: {e}")
+            raise RuntimeError(f"WP站点统计查询失败: {url}") from e
+
+        return {
+            "visits": data.get("visits", data.get("sessions", 0)),
+            "unique_visitors": data.get("unique_visitors", data.get("visitors", 0)),
+            "page_views": data.get("page_views", data.get("pageviews", 0)),
+            "bounce_rate": data.get("bounce_rate", 0.0),
+            "avg_session_duration": data.get("avg_session_duration", data.get("avg_session", 0.0)),
+        }
+
+    @staticmethod
+    def _extract_domain(url: str) -> str:
+        """从URL中提取域名"""
+        try:
+            parsed = urllib.parse.urlparse(url)
+            return parsed.netloc.lower()
+        except Exception:
+            return ""
 
     def get_history(self, url: str) -> List[TrafficResult]:
         """获取流量历史"""
@@ -1182,7 +1536,9 @@ class WebhookAlertSender:
             }
 
     def send(self, webhook_type: WebhookType, alert: Alert) -> Dict[str, Any]:
-        """发送Webhook告警（模拟实现）
+        """发送Webhook告警
+
+        通过HTTP POST请求将告警消息发送到已注册的Webhook URL。
 
         Args:
             webhook_type: Webhook类型
@@ -1200,24 +1556,79 @@ class WebhookAlertSender:
             }
 
         message = self.format_message(webhook_type, alert)
+        sent_at = time.time()
 
-        # 记录发送历史（实际实现应使用 httpx/aiohttp 发送HTTP请求）
+        # 真实发送HTTP POST请求
+        try:
+            response = self._post_webhook(url, message)
+            success = response.get("success", True)
+            error_msg = response.get("error", "")
+        except Exception as e:
+            success = False
+            error_msg = str(e)
+            logger.warning(f"Webhook发送失败: {webhook_type.value} -> {url}, 错误: {e}")
+
         record = {
             "webhook_type": webhook_type.value,
             "url": url,
             "alert_id": alert.id,
             "message": message,
-            "sent_at": time.time(),
-            "success": True,
+            "sent_at": sent_at,
+            "success": success,
+            "error": error_msg if not success else "",
         }
         self._send_history.append(record)
 
-        logger.info(f"Webhook告警已发送: {webhook_type.value} -> {alert.target}")
-        return {
-            "success": True,
-            "webhook_type": webhook_type.value,
-            "message": "告警已发送",
-        }
+        if success:
+            logger.info(f"Webhook告警已发送: {webhook_type.value} -> {alert.target}")
+            return {
+                "success": True,
+                "webhook_type": webhook_type.value,
+                "message": "告警已发送",
+            }
+        else:
+            return {
+                "success": False,
+                "webhook_type": webhook_type.value,
+                "message": f"发送失败: {error_msg}",
+                "error_code": "send_failed",
+            }
+
+    def _post_webhook(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """向Webhook URL发送POST请求
+
+        Args:
+            url: Webhook URL
+            payload: 消息体
+
+        Returns:
+            包含 success 和可选 error 的字典
+
+        Raises:
+            RuntimeError: HTTP请求失败时抛出
+        """
+        body = json.dumps(payload).encode("utf-8")
+        try:
+            req = urllib.request.Request(
+                url,
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "WPForge-Monitor/1.0",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                status_code = resp.getcode()
+                resp.read()  # 读取响应体以释放连接
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"HTTP {e.code}: {e.reason}") from e
+        except Exception as e:
+            raise RuntimeError(f"请求失败: {e}") from e
+
+        if status_code >= 400:
+            return {"success": False, "error": f"HTTP {status_code}"}
+        return {"success": True}
 
     def send_to_all(self, alert: Alert) -> Dict[str, Dict[str, Any]]:
         """向所有已注册的Webhook发送告警
@@ -1276,7 +1687,9 @@ class EmailAlertSender:
         return {"subject": subject, "body": body}
 
     def send(self, alert: Alert) -> Dict[str, Any]:
-        """发送邮件告警（模拟实现）
+        """发送邮件告警
+
+        通过SMTP协议将告警邮件发送到已配置的收件人。
 
         Args:
             alert: 告警对象
@@ -1292,18 +1705,76 @@ class EmailAlertSender:
             }
 
         email = self.format_email(alert)
+        sent_at = time.time()
+
+        # 真实发送SMTP邮件
+        try:
+            self._send_smtp(self.to_addrs, email["subject"], email["body"])
+            success = True
+            error_msg = ""
+        except Exception as e:
+            success = False
+            error_msg = str(e)
+            logger.warning(f"邮件发送失败: {email['subject']}, 错误: {e}")
+
         record = {
             "to": self.to_addrs,
             "subject": email["subject"],
             "body": email["body"],
             "alert_id": alert.id,
-            "sent_at": time.time(),
-            "success": True,
+            "sent_at": sent_at,
+            "success": success,
+            "error": error_msg if not success else "",
         }
         self._send_history.append(record)
 
-        logger.info(f"邮件告警已发送: {email['subject']}")
-        return {"success": True, "subject": email["subject"]}
+        if success:
+            logger.info(f"邮件告警已发送: {email['subject']}")
+            return {"success": True, "subject": email["subject"]}
+        else:
+            return {
+                "success": False,
+                "subject": email["subject"],
+                "message": f"发送失败: {error_msg}",
+                "error_code": "send_failed",
+            }
+
+    def _send_smtp(self, to_addrs: List[str], subject: str, body: str) -> None:
+        """通过SMTP发送邮件
+
+        Args:
+            to_addrs: 收件人列表
+            subject: 邮件主题
+            body: 邮件正文
+
+        Raises:
+            RuntimeError: SMTP发送失败时抛出
+            ValueError: SMTP主机未配置时抛出
+        """
+        if not self.smtp_host:
+            raise ValueError("SMTP主机未配置，请先调用configure()")
+
+        msg = MIMEText(body, "plain", "utf-8")
+        msg["Subject"] = subject
+        msg["From"] = self.from_addr
+        msg["To"] = ", ".join(to_addrs)
+        msg["Date"] = formatdate(localtime=True)
+
+        try:
+            with smtplib.SMTP(self.smtp_host, self.smtp_port, timeout=30) as server:
+                # STARTTLS（端口587常用）
+                if self.smtp_port in (587, 25) and self.username:
+                    try:
+                        server.starttls()
+                    except smtplib.SMTPException:
+                        pass
+                if self.username:
+                    server.login(self.username, self.password)
+                server.sendmail(self.from_addr, to_addrs, msg.as_string())
+        except smtplib.SMTPException as e:
+            raise RuntimeError(f"SMTP发送失败: {e}") from e
+        except Exception as e:
+            raise RuntimeError(f"邮件发送异常: {e}") from e
 
     def get_send_history(self, limit: int = 100) -> List[Dict[str, Any]]:
         """获取发送历史"""

@@ -363,19 +363,46 @@ class MonitoringService:
         )
 
         try:
-            # 注意：实际实现需要使用WHOIS查询或域名注册商API
-            # 这里是模拟实现
-            # 实际项目中应该使用python-whois库或注册商API
+            # 使用 python-whois 库查询真实域名到期时间
+            import whois
 
-            # 模拟：假设域名还有180天到期
-            days_remaining = 180  # 模拟值
+            w = whois.whois(domain)
+            expiry_date = w.expiration_date
+
+            # 处理返回的日期可能是列表或单个值的情况
+            if isinstance(expiry_date, list):
+                expiry_date = expiry_date[0]
+
+            if not expiry_date:
+                result.status = "error"
+                result.message = f"无法获取域名 {domain} 的到期时间"
+                self._record_result(site_id, result)
+                if result.status in ["warning", "critical", "error"]:
+                    self._check_and_send_alert(result)
+                return result
+
+            # 计算剩余天数
+            if isinstance(expiry_date, str):
+                expiry_date = datetime.strptime(expiry_date, "%Y-%m-%d")
+            elif hasattr(expiry_date, 'date'):
+                expiry_date = expiry_date.date() if hasattr(expiry_date, 'date') else expiry_date
+
+            now = datetime.now()
+            if hasattr(expiry_date, 'year') and hasattr(expiry_date, 'month'):
+                # 处理 date 或 datetime 对象
+                if not hasattr(expiry_date, 'hour'):
+                    expiry_date = datetime(expiry_date.year, expiry_date.month, expiry_date.day)
+
+            days_remaining = (expiry_date - now).days
+
+            registrar = w.registrar if w.registrar else "Unknown"
 
             result.value = days_remaining
             result.details = {
                 "domain": domain,
                 "days_remaining": days_remaining,
-                "registrar": "Simulated Registrar",
-                "expiry_date": (datetime.now() + timedelta(days=days_remaining)).strftime("%Y-%m-%d"),
+                "registrar": registrar,
+                "expiry_date": expiry_date.strftime("%Y-%m-%d") if hasattr(expiry_date, 'strftime') else str(expiry_date),
             }
 
             if days_remaining > self.config.domain_warning_days:
@@ -388,6 +415,9 @@ class MonitoringService:
                 result.status = "critical"
                 result.message = f"Domain expires in {days_remaining} days! Renew immediately!"
 
+        except ImportError:
+            result.status = "error"
+            result.message = "python-whois 库未安装，无法查询域名到期时间。请运行: pip install python-whois"
         except Exception as e:
             result.status = "error"
             result.message = f"Error checking domain: {str(e)}"

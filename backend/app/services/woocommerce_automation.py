@@ -2,10 +2,15 @@
 WooCommerce深度自动化服务
 产品评论AI生成、支付配置、配送设置、优惠券、交叉销售
 """
+import base64
 import random
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from urllib.parse import urljoin
+
+import httpx
+
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -1276,9 +1281,71 @@ class WooCommerceAutomationService:
         },
     }
 
+    def _update_payment_gateway_via_api(
+        self,
+        site_config: Dict[str, Any],
+        gw_id: str,
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """通过 WooCommerce REST API 真实更新支付网关设置
+
+        PUT /wp-json/wc/v3/payment_gateways/{id}
+
+        支持两种认证方式（优先使用 WooCommerce API 凭证）：
+        1. WooCommerce REST API 凭证（wc_consumer_key / wc_consumer_secret）
+        2. WordPress 应用密码（username / app_password，Basic Auth）
+
+        Args:
+            site_config: 站点配置，需包含 url 及认证凭证
+            gw_id: 网关标识
+            payload: 请求体（enabled/title/description/settings）
+
+        Returns:
+            API 响应字典，包含 success 与响应内容
+
+        Raises:
+            RuntimeError: 凭证缺失或 API 调用失败
+        """
+        site_url = site_config.get("url") or site_config.get("site_url")
+        if not site_url:
+            raise RuntimeError("site_config 缺少 url，无法调用 WooCommerce REST API")
+
+        endpoint = urljoin(site_url, f"/wp-json/wc/v3/payment_gateways/{gw_id}")
+
+        # 构造认证：优先 WooCommerce API 凭证
+        wc_key = site_config.get("wc_consumer_key")
+        wc_secret = site_config.get("wc_consumer_secret")
+        username = site_config.get("username")
+        app_password = site_config.get("app_password")
+
+        headers = {"Content-Type": "application/json"}
+        auth = None
+        if wc_key and wc_secret:
+            auth = (wc_key, wc_secret)
+        elif username and app_password:
+            token = base64.b64encode(f"{username}:{app_password}".encode()).decode()
+            headers["Authorization"] = f"Basic {token}"
+        else:
+            raise RuntimeError(
+                "site_config 缺少认证凭证（需 wc_consumer_key/wc_consumer_secret 或 username/app_password）"
+            )
+
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                resp = client.put(endpoint, headers=headers, json=payload, auth=auth)
+                if resp.status_code >= 400:
+                    raise RuntimeError(
+                        f"WooCommerce API 返回 {resp.status_code}: {resp.text}"
+                    )
+                resp.raise_for_status()
+                return resp.json() if resp.text else {}
+        except httpx.HTTPError as e:
+            raise RuntimeError(f"调用 WooCommerce REST API 失败: {e}") from e
+
     def configure_payment_gateways(self,
                                     site_id: int,
-                                    gateways: List[Dict[str, Any]]) -> Dict[str, Any]:
+                                    gateways: List[Dict[str, Any]],
+                                    site_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         通过 WooCommerce REST API 配置支付网关
 
@@ -1290,6 +1357,8 @@ class WooCommerceAutomationService:
                 - title: 显示标题
                 - description: 描述
                 - settings: 额外设置
+            site_config: 站点配置（含 url 与认证凭证），提供时执行真实 API 调用；
+                         未提供时仅记录待执行的 API 请求体，status 标记为 pending。
 
         Returns:
             配置结果字典，包含 site_id, configured 列表, success 标志
@@ -1314,8 +1383,7 @@ class WooCommerceAutomationService:
             merged_settings["description"] = description
             merged_settings["enabled"] = "yes" if enabled else "no"
 
-            # 模拟通过 WooCommerce REST API 更新网关设置
-            # 真实场景: PUT /wp-json/wc/v3/payment_gateways/{id}
+            # 构造 WooCommerce REST API 请求体
             api_payload = {
                 "endpoint": f"/wc/v3/payment_gateways/{gw_id}",
                 "method": "PUT",
@@ -1328,6 +1396,22 @@ class WooCommerceAutomationService:
                 },
             }
 
+            # 若提供站点配置，执行真实 API 调用；否则标记为待执行
+            api_response: Optional[Dict[str, Any]] = None
+            status = "configured"
+            if site_config:
+                try:
+                    api_response = self._update_payment_gateway_via_api(
+                        site_config, gw_id, api_payload["payload"]
+                    )
+                    status = "configured"
+                except Exception as e:
+                    logger.error(f"更新支付网关 {gw_id} 失败: {e}")
+                    api_response = {"error": str(e)}
+                    status = "failed"
+            else:
+                status = "pending"
+
             configured.append({
                 "gateway_id": gw_id,
                 "title": title,
@@ -1335,7 +1419,8 @@ class WooCommerceAutomationService:
                 "enabled": enabled,
                 "settings": merged_settings,
                 "api_request": api_payload,
-                "status": "configured",
+                "api_response": api_response,
+                "status": status,
             })
 
         logger.info(

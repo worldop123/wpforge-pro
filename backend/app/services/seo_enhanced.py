@@ -102,9 +102,12 @@ class KeywordGenerator:
     }
     
     def __init__(self):
-        pass
-    
-    def generate_lsi_keywords(self, 
+        # 关键词缓存，避免对同一主关键词重复生成
+        self._cache: Dict[str, List[str]] = {}
+        # 独立的随机数生成器，避免影响全局random状态
+        self._rng = random.Random()
+
+    def generate_lsi_keywords(self,
                                primary_keyword: str,
                                keyword_type: str = "product",
                                count: int = 10) -> List[str]:
@@ -200,10 +203,15 @@ class KeywordGenerator:
 
 class SchemaGenerator:
     """Schema结构化数据生成器"""
-    
+
     def __init__(self):
-        pass
-    
+        # 支持的Schema类型注册表
+        self._supported_types = {
+            "Product", "Article", "FAQPage", "Organization",
+            "WebSite", "BreadcrumbList", "Review", "LocalBusiness",
+            "Event", "Recipe", "VideoObject", "HowTo",
+        }
+
     def generate_product_schema(self, product: Dict[str, Any]) -> SchemaData:
         """
         生成产品Schema
@@ -470,11 +478,14 @@ class SchemaGenerator:
 
 class InternalLinkBuilder:
     """内部链接建设器"""
-    
+
     def __init__(self):
-        pass
-    
-    def build_internal_links(self, 
+        # 已插入链接的关键词集合，避免重复链接
+        self._linked_keywords: set = set()
+        # 累计插入的链接总数
+        self._total_links_added: int = 0
+
+    def build_internal_links(self,
                              content: str,
                              keywords: List[Dict[str, str]],
                              max_links: int = 5) -> str:
@@ -558,11 +569,14 @@ class InternalLinkBuilder:
 
 class ImageSEO:
     """图片SEO优化器"""
-    
+
     def __init__(self):
-        pass
-    
-    def generate_alt_text(self, 
+        # 支持的图片格式
+        self._supported_formats = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".bmp"}
+        # ALT文本最大长度（SEO最佳实践）
+        self._max_alt_length: int = 125
+
+    def generate_alt_text(self,
                           image_name: str,
                           product_name: Optional[str] = None,
                           context: Optional[str] = None) -> str:
@@ -744,20 +758,67 @@ class SEOService:
         return description
     
     def _optimize_content(self, content: str, keyword: str) -> str:
-        """优化内容"""
+        """优化内容
+
+        确保关键词密度在1-3%之间，密度过低时在合适位置自然插入关键词。
+        """
+        if not keyword or not content:
+            return content
+
         # 确保关键词密度在1-3%之间
         word_count = len(content.split())
         keyword_count = content.lower().count(keyword.lower())
-        
+
         if word_count > 0:
             density = keyword_count / word_count * 100
-            
-            # 如果密度太低，适当添加
+
+            # 如果密度太低，在合适的位置自然插入关键词
             if density < 1.0:
-                # 在合适的位置插入关键词
-                pass
-        
+                # 计算需要插入的次数，使密度达到约1.5%
+                target_count = max(1, int(word_count * 0.015))
+                insertions_needed = target_count - keyword_count
+                if insertions_needed > 0:
+                    content = self._insert_keyword_naturally(content, keyword, insertions_needed)
+
         return content
+
+    def _insert_keyword_naturally(self, content: str, keyword: str, count: int) -> str:
+        """在内容的自然位置插入关键词
+
+        优先在段落开头或句号后插入，避免破坏内容结构。
+
+        Args:
+            content: 原始内容
+            keyword: 要插入的关键词
+            count: 插入次数
+
+        Returns:
+            插入关键词后的内容
+        """
+        # 按段落分割
+        paragraphs = content.split("\n")
+        inserted = 0
+
+        for i, para in enumerate(paragraphs):
+            if inserted >= count:
+                break
+            if not para.strip():
+                continue
+
+            # 在段落首句后插入关键词（句号、问号、感叹号后）
+            sentence_end = re.search(r'[.。!！?？]\s*', para)
+            if sentence_end:
+                pos = sentence_end.end()
+                # 构造自然的插入语句
+                insertion = f" {keyword} "
+                paragraphs[i] = para[:pos] + insertion + para[pos:]
+                inserted += 1
+            elif inserted == 0 and len(para) > 20:
+                # 第一个段落且无句号时，在开头插入
+                paragraphs[i] = f"{keyword}. {para}"
+                inserted += 1
+
+        return "\n".join(paragraphs)
     
     def calculate_seo_score(self,
                             title: str,

@@ -3,6 +3,7 @@
 """
 import asyncio
 import pytest
+from unittest.mock import patch
 from app.services.search_console_service import (
     SearchEngine,
     IndexingStatus,
@@ -555,7 +556,8 @@ class TestBaiduWebmasterService:
 
     def test_get_indexed_count(self):
         service = BaiduWebmasterService(site="example.com", token="tok")
-        result = service.get_indexed_count("https://example.com")
+        with patch.object(service, "_fetch_indexed_count", return_value=1234):
+            result = service.get_indexed_count("https://example.com")
         assert result["success"] is True
         assert "indexed_count" in result
 

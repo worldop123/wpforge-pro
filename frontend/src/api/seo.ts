@@ -1,5 +1,18 @@
 import api from './index'
 
+// 获取SEO概览统计
+export function getSEOOverview() {
+  return api.get('/seo/overview')
+}
+
+// 获取页面收录数据
+export function getIndexingData(params?: {
+  site_id?: number;
+  limit?: number;
+}) {
+  return api.get('/seo/indexing', { params })
+}
+
 // SEO审计
 export function auditSEO(data: {
   url: string;

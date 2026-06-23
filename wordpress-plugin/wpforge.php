@@ -270,12 +270,18 @@ class WPForge {
         // 本地化脚本
         wp_localize_script('wpforge-admin', 'wpforgeData', array(
             'ajaxUrl' => admin_url('admin-ajax.php'),
+            'restUrl' => esc_url_raw(rest_url('wpforge/v1')),
+            'restNonce' => wp_create_nonce('wp_rest'),
             'nonce' => wp_create_nonce('wpforge_nonce'),
+            'apiUrl' => esc_url_raw(get_option('wpforge_api_url', '')),
+            'apiKey' => get_option('wpforge_api_key', ''),
             'strings' => array(
                 'confirm' => __('确定吗？', 'wpforge'),
                 'importing' => __('导入中...', 'wpforge'),
                 'success' => __('成功', 'wpforge'),
-                'error' => __('错误', 'wpforge')
+                'error' => __('错误', 'wpforge'),
+                'requestFailed' => __('请求失败，请重试', 'wpforge'),
+                'noPostId' => __('未找到可分析的内容，请先创建产品或文章', 'wpforge'),
             )
         ));
     }

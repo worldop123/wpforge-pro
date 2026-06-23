@@ -9,6 +9,14 @@ from enum import Enum
 from dataclasses import dataclass, field
 from app.core.logging import get_logger
 
+# 用于代理健康检查，按需导入（缺失时降级为跳过健康检查）
+try:
+    import httpx
+    HTTPX_AVAILABLE = True
+except ImportError:
+    HTTPX_AVAILABLE = False
+    httpx = None
+
 logger = get_logger(__name__)
 
 
@@ -68,6 +76,7 @@ class Proxy:
     avg_response_time: float = 0.0
     last_used: Optional[float] = None
     last_checked: Optional[float] = None
+    last_banned: Optional[float] = None
     banned_domains: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
     
@@ -266,12 +275,145 @@ class ProxyPool:
         # 检查是否超过最大失败次数
         if proxy.fail_count >= self.config.max_failures:
             proxy.status = ProxyStatus.BANNED
+            proxy.last_banned = time.time()
             logger.warning(f"Proxy {proxy_id} banned after {proxy.fail_count} failures: {reason}")
             
-            # 自动恢复
+            # 自动恢复：尝试恢复其他已过冷却期的被禁代理
             if self.config.auto_recover:
-                # 这里可以设置定时任务恢复
-                pass
+                self.auto_recover()
+    
+    def check_proxy_health(self, proxy_id: str) -> bool:
+        """检查单个代理的健康状态
+
+        通过向配置的健康检查URL发送请求来验证代理是否可用。
+        当httpx不可用或健康检查未启用时，直接返回代理当前状态。
+
+        Args:
+            proxy_id: 代理ID
+
+        Returns:
+            True表示代理健康可用，False表示不可用
+        """
+        if proxy_id not in self.proxies:
+            return False
+
+        proxy = self.proxies[proxy_id]
+
+        # 如果健康检查未启用，直接根据当前状态判断
+        if not self.config.health_check_enabled:
+            return proxy.status == ProxyStatus.ACTIVE
+
+        # httpx不可用时无法进行真实健康检查
+        if not HTTPX_AVAILABLE:
+            logger.warning("httpx未安装，无法执行代理健康检查")
+            return proxy.status == ProxyStatus.ACTIVE
+
+        proxy.last_checked = time.time()
+
+        try:
+            with httpx.Client(
+                proxy=proxy.url,
+                timeout=self.config.health_check_timeout,
+                verify=False,
+            ) as client:
+                response = client.get(self.config.health_check_url)
+                is_healthy = response.status_code < 400
+
+            if is_healthy:
+                logger.debug(f"Proxy {proxy_id} health check passed")
+            else:
+                logger.debug(
+                    f"Proxy {proxy_id} health check failed: status {response.status_code}"
+                )
+            return is_healthy
+        except Exception as e:
+            logger.debug(f"Proxy {proxy_id} health check error: {e}")
+            return False
+
+    def auto_recover(self) -> int:
+        """自动恢复被禁用的代理
+
+        遍历所有处于 BANNED / ERROR / TIMEOUT 状态的代理，
+        对冷却期（failure_cooldown）已过的代理执行健康检查：
+          - 健康检查通过：重新启用代理，清零失败计数，状态置为 ACTIVE
+          - 健康检查未通过：保持禁用状态，更新 last_checked 时间
+          - 冷却期未到：跳过，等待下次恢复
+
+        Returns:
+            本次成功恢复的代理数量
+        """
+        if not self.config.auto_recover:
+            return 0
+
+        now = time.time()
+        cooldown = self.config.failure_cooldown
+        recovered_count = 0
+
+        # 遍历所有非活跃代理（BANNED / ERROR / TIMEOUT / INACTIVE）
+        disabled_statuses = {
+            ProxyStatus.BANNED,
+            ProxyStatus.ERROR,
+            ProxyStatus.TIMEOUT,
+            ProxyStatus.INACTIVE,
+        }
+
+        for proxy in self.proxies.values():
+            if proxy.status not in disabled_statuses:
+                continue
+
+            # 判断冷却期是否已过
+            banned_time = proxy.last_banned or proxy.last_checked or 0
+            if banned_time and (now - banned_time) < cooldown:
+                # 冷却期未到，跳过
+                continue
+
+            # 执行健康检查
+            is_healthy = self.check_proxy_health(proxy.id)
+
+            if is_healthy:
+                # 恢复代理：清零失败计数，重新启用
+                proxy.status = ProxyStatus.ACTIVE
+                proxy.fail_count = 0
+                proxy.last_checked = now
+                recovered_count += 1
+                logger.info(
+                    f"Proxy {proxy.id} recovered: health check passed, "
+                    f"fail count reset to 0"
+                )
+            else:
+                # 健康检查未通过，更新检查时间，保持禁用
+                proxy.last_checked = now
+                logger.debug(
+                    f"Proxy {proxy.id} still unhealthy, remains {proxy.status.value}"
+                )
+
+        if recovered_count > 0:
+            logger.info(f"Auto recover: {recovered_count} proxy(s) re-enabled")
+
+        return recovered_count
+
+    def cleanup_failure_counts(self) -> int:
+        """清理活跃代理的失败计数
+
+        对于长期运行后累积了少量失败但未达到禁用阈值的活跃代理，
+        定期清理其失败计数，避免历史失败累积导致误禁用。
+
+        Returns:
+            本次清理了失败计数的代理数量
+        """
+        cleaned_count = 0
+        for proxy in self.proxies.values():
+            # 仅清理活跃代理的非零失败计数
+            if proxy.status == ProxyStatus.ACTIVE and proxy.fail_count > 0:
+                # 如果最近有成功记录，清理失败计数
+                if proxy.success_count > 0:
+                    proxy.fail_count = 0
+                    cleaned_count += 1
+
+        if cleaned_count > 0:
+            logger.debug(f"Cleaned failure counts for {cleaned_count} active proxy(s)")
+
+        return cleaned_count
     
     def check_rate_limit(self, proxy_id: str) -> bool:
         """检查速率限制"""

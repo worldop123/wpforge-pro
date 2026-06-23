@@ -48,7 +48,7 @@ export function getTaskLogs(id: number, params?: { page?: number; page_size?: nu
 
 // 获取任务统计
 export function getTaskStats() {
-  return api.get('/tasks/stats')
+  return api.get('/tasks/stats/summary')
 }
 
 // 批量删除任务

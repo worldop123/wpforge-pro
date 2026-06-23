@@ -246,12 +246,28 @@ class SocketServer {
     this.app.post('/api/groups', (req, res) => {
       const apiKey = req.headers['x-api-key'];
       const authResult = this.authManager.verifyAdminApiKey(apiKey);
-      
+
       if (!authResult.valid) {
         return res.status(401).json({ success: false, error: 'Unauthorized' });
       }
 
       const result = this.siteManager.createGroup(req.body.name, req.body.description);
+      res.json(result);
+    });
+
+    // 删除分组
+    this.app.delete('/api/groups/:groupId', (req, res) => {
+      const apiKey = req.headers['x-api-key'];
+      const authResult = this.authManager.verifyAdminApiKey(apiKey);
+
+      if (!authResult.valid) {
+        return res.status(401).json({ success: false, error: 'Unauthorized' });
+      }
+
+      const result = this.siteManager.deleteGroup(req.params.groupId);
+      if (!result.success && result.error === 'Group not found') {
+        return res.status(404).json(result);
+      }
       res.json(result);
     });
 

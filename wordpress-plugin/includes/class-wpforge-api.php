@@ -85,21 +85,30 @@ class WPForge_API {
     
     /**
      * 权限检查
+     *
+     * 允许两种访问方式：
+     * 1. 已登录的管理员用户（通过 WP REST nonce 验证，用于后台管理页面）
+     * 2. 携带有效 API 密钥的请求（用于外部 API 调用）
      */
     public function check_permission() {
-        // 检查API密钥
+        // 优先检查已登录的管理员用户（后台页面调用）
+        if (is_user_logged_in() && current_user_can('manage_options')) {
+            return true;
+        }
+
+        // 检查API密钥（外部调用）
         $api_key = get_option('wpforge_api_key', '');
-        
+
         if (!$api_key) {
             return new WP_Error('no_api_key', __('API密钥未配置', 'wpforge'), array('status' => 403));
         }
-        
+
         $request_key = isset($_SERVER['HTTP_X_WPFORGE_API_KEY']) ? $_SERVER['HTTP_X_WPFORGE_API_KEY'] : '';
-        
+
         if (!$request_key || $request_key !== $api_key) {
             return new WP_Error('invalid_api_key', __('无效的API密钥', 'wpforge'), array('status' => 403));
         }
-        
+
         return true;
     }
     

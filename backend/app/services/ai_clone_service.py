@@ -447,33 +447,37 @@ class AICloneService:
         # 原创化标题
         if page.title:
             page.originalized_title = self._originalize_text(page.title, brand_name)
-        
-        # 原创化内容（模拟）
-        page.originalized_content = f"Originalized content for: {page.originalized_title or page.title}"
-        
-        # 计算原创度分数
-        page.originality_score = 0.85 + random.random() * 0.1
-        
+
+        # 原创化正文内容：基于真实原文调用 AI 改写
+        source_content = page.original_content or page.title or ""
+        if source_content:
+            page.originalized_content = self._originalize_text(source_content, brand_name)
+        else:
+            page.originalized_content = ""
+
+        # 基于原文与改写后文本的真实差异度计算原创度分数
+        original_text = page.original_content or page.title or ""
+        rewritten_text = page.originalized_content or page.originalized_title or ""
+        if original_text and rewritten_text:
+            diff = self._text_difference(original_text, rewritten_text)
+            # 差异度越高原创度越高，映射到 0-1 区间
+            page.originality_score = round(max(0.0, min(1.0, diff)), 4)
+        else:
+            page.originality_score = 0.0
+
         return page
-    
+
     def _originalize_text(self, text: str, brand_name: str = "") -> str:
-        """原创化文本（简化版）"""
+        """原创化文本：先替换品牌名，再调用真实 AI 改写"""
         if not text:
             return text
-        
-        # 替换品牌名
+
+        # 替换品牌名占位符为目标品牌
         if brand_name:
-            # 简单替换常见品牌占位
             text = re.sub(r'Your Brand|Our Brand|Brand Name', brand_name, text, flags=re.IGNORECASE)
-        
-        # 简单重写（实际应该用AI）
-        # 这里只是模拟
-        words = text.split()
-        if len(words) > 3:
-            # 调整一些词的顺序
-            pass
-        
-        return text
+
+        # 调用真实 AI 改写（内部会优先用 AI 服务，失败时降级到本地算法）
+        return self.rewrite_content(text, style="natural")
     
     def rearrange_layout(self, page: ClonedPage) -> ClonedPage:
         """
@@ -513,8 +517,8 @@ class AICloneService:
         完整仿站流程 - 一键全自动
         """
         logger.info(f"开始仿站: {reference_url}")
-        
-        # 1. 爬取网站（模拟）
+
+        # 1. 发现网站URL（真实抓取首页解析链接）
         urls = self._generate_sample_urls(reference_url, pages_to_clone)
         
         # 2. 分析网站
@@ -542,27 +546,82 @@ class AICloneService:
         return result
     
     def _generate_sample_urls(self, base_url: str, count: int) -> List[str]:
-        """生成示例URL（模拟爬取）"""
+        """基于目标站点结构生成待采集的URL列表
+
+        优先通过真实HTTP请求抓取首页HTML，解析其中的同域链接；
+        若抓取失败或可用链接不足，则基于常见页面路径补充。
+        """
         parsed = urlparse(base_url)
-        base = f"{parsed.scheme}://{parsed.netloc}"
-        
-        urls = [
-            base + "/",
-            base + "/about-us",
-            base + "/contact-us",
-            base + "/products",
-            base + "/products/sample-product",
-            base + "/categories",
-            base + "/blog",
-            base + "/blog/sample-post",
-            base + "/faq",
-            base + "/privacy-policy",
-            base + "/terms-of-service",
-            base + "/cart",
-            base + "/checkout"
-        ]
-        
-        return urls[:count]
+        scheme = parsed.scheme or "https"
+        netloc = parsed.netloc
+        if not netloc:
+            # 无法解析域名时直接返回空列表
+            return []
+        base = f"{scheme}://{netloc}"
+
+        discovered: List[str] = []
+        seen: set = set()
+
+        # 1. 真实抓取首页，解析同域链接
+        try:
+            import urllib.request
+            import urllib.error
+            req = urllib.request.Request(
+                base_url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (compatible; WPForge-AIClone/1.0)",
+                    "Accept": "text/html,application/xhtml+xml",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                html = resp.read().decode("utf-8", errors="ignore")
+
+            # 用正则提取所有 href 链接
+            for match in re.finditer(r'href=["\']([^"\']+)["\']', html, re.IGNORECASE):
+                href = match.group(1).strip()
+                if not href or href.startswith(("#", "javascript:", "mailto:", "tel:", "data:")):
+                    continue
+                absolute = urljoin(base + "/", href)
+                abs_parsed = urlparse(absolute)
+                # 仅保留同域链接
+                if abs_parsed.netloc != netloc:
+                    continue
+                # 规范化：去除锚点与查询参数，保留路径
+                normalized = f"{abs_parsed.scheme}://{abs_parsed.netloc}{abs_parsed.path or '/'}"
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                discovered.append(normalized)
+                if len(discovered) >= count:
+                    break
+        except Exception as e:
+            logger.warning("抓取目标站点 %s 失败，将使用常见路径兜底: %s", base_url, e)
+
+        # 2. 若真实抓取不足，基于常见页面路径补充
+        if len(discovered) < count:
+            common_paths = [
+                "/",
+                "/about-us",
+                "/contact-us",
+                "/shop",
+                "/products",
+                "/blog",
+                "/faq",
+                "/privacy-policy",
+                "/terms-of-service",
+                "/cart",
+                "/checkout",
+                "/categories",
+            ]
+            for path in common_paths:
+                if len(discovered) >= count:
+                    break
+                url = base + path
+                if url not in seen:
+                    seen.add(url)
+                    discovered.append(url)
+
+        return discovered[:count]
     
     def get_page_type_name(self, page_type: PageType) -> str:
         """获取页面类型的友好名称"""
@@ -1151,7 +1210,7 @@ class AICloneService:
                 "status": "no_urls",
             }
 
-        # 分析每个站点（模拟，使用 sample urls）
+        # 分析每个站点（真实抓取各站点URL并分析）
         site_analyses: List[Dict[str, Any]] = []
         all_pages: List[ClonedPage] = []
         all_layouts: Dict[str, int] = {}  # 模块名 -> 出现次数

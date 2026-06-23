@@ -315,6 +315,8 @@ class SEOAuditRequest(BaseModel):
     url: HttpUrl
     site_id: Optional[int] = None
     deep_audit: bool = False
+    html_content: Optional[str] = None
+    target_keywords: Optional[List[str]] = None
 
 
 class SEOAuditResponse(BaseModel):

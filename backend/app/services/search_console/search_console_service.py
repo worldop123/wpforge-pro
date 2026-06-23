@@ -6,8 +6,15 @@ from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
 import json
+import random
 import time
 from datetime import datetime, timedelta
+
+import httpx
+
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class SearchEngine(str, Enum):
@@ -161,6 +168,240 @@ class SearchConsoleService:
         self._submission_history: Dict[str, List[IndexingResult]] = {}
         self._analytics_cache: Dict[str, SearchAnalyticsData] = {}
         self._rankings: List[RankingData] = []
+        # Google OAuth2 access token 缓存：(access_token, expires_at)
+        self._google_token_cache: Optional[tuple] = None
+
+    # ==================== OAuth2 / API 调用辅助 ====================
+
+    def _get_google_access_token(self) -> str:
+        """通过 refresh_token 获取 Google OAuth2 access_token
+
+        使用 Google OAuth2 token 端点刷新访问令牌。
+        凭证从 SearchConsoleConfig 读取，缺失时抛出明确异常。
+
+        Returns:
+            访问令牌字符串
+
+        Raises:
+            RuntimeError: 凭证未配置或刷新失败
+        """
+        cfg = self.config
+        if not (cfg.google_client_id and cfg.google_client_secret and cfg.google_refresh_token):
+            raise RuntimeError("Google OAuth2 凭证未配置（需要 client_id、client_secret、refresh_token）")
+
+        # 命中缓存且未过期（提前 60 秒失效以留出余量）
+        if self._google_token_cache:
+            token, expires_at = self._google_token_cache
+            if token and expires_at and time.time() < expires_at - 60:
+                return token
+
+        token_url = "https://oauth2.googleapis.com/token"
+        payload = {
+            "client_id": cfg.google_client_id,
+            "client_secret": cfg.google_client_secret,
+            "refresh_token": cfg.google_refresh_token,
+            "grant_type": "refresh_token",
+        }
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                resp = client.post(token_url, data=payload)
+                resp.raise_for_status()
+                data = resp.json()
+        except httpx.HTTPError as e:
+            raise RuntimeError(f"刷新 Google access_token 失败: {e}") from e
+
+        access_token = data.get("access_token")
+        expires_in = data.get("expires_in", 3600)
+        if not access_token:
+            raise RuntimeError(f"Google token 响应缺少 access_token: {data}")
+
+        self._google_token_cache = (access_token, time.time() + int(expires_in))
+        return access_token
+
+    def _google_indexing_api_publish(self, url: str, access_token: str) -> Dict[str, Any]:
+        """调用 Google Indexing API 提交 URL 通知
+
+        Args:
+            url: 要提交的 URL
+            access_token: OAuth2 访问令牌
+
+        Returns:
+            API 响应字典
+
+        Raises:
+            RuntimeError: API 调用失败
+        """
+        api_url = "https://indexing.googleapis.com/v3/urlNotifications:publish"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+        body = {"url": url, "type": "URL_UPDATED"}
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                resp = client.post(api_url, headers=headers, json=body)
+                # 200/201 表示成功；4xx 抛出携带响应内容的异常
+                if resp.status_code >= 400:
+                    raise RuntimeError(
+                        f"Google Indexing API 返回 {resp.status_code}: {resp.text}"
+                    )
+                resp.raise_for_status()
+                return resp.json() if resp.text else {}
+        except httpx.HTTPError as e:
+            raise RuntimeError(f"调用 Google Indexing API 失败: {e}") from e
+
+    def _google_search_analytics_query(
+        self, start_date: str, end_date: str, access_token: str
+    ) -> Dict[str, Any]:
+        """调用 Google Search Console API 查询搜索分析数据
+
+        Args:
+            start_date: 开始日期 YYYY-MM-DD
+            end_date: 结束日期 YYYY-MM-DD
+            access_token: OAuth2 访问令牌
+
+        Returns:
+            API 响应字典（含 rows）
+
+        Raises:
+            RuntimeError: API 调用失败
+        """
+        site_url = self.config.google_site_url
+        if not site_url:
+            raise RuntimeError("Google site_url 未配置，无法查询搜索分析")
+
+        encoded_site = httpx.URL(site_url).path or site_url
+        api_url = f"https://www.googleapis.com/webmasters/v3/sites/{encoded_site}/searchAnalytics/query"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "startDate": start_date,
+            "endDate": end_date,
+            "dimensions": ["query"],
+            "rowLimit": 1000,
+        }
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                resp = client.post(api_url, headers=headers, json=body)
+                if resp.status_code >= 400:
+                    raise RuntimeError(
+                        f"Google Search Console API 返回 {resp.status_code}: {resp.text}"
+                    )
+                resp.raise_for_status()
+                return resp.json() if resp.text else {}
+        except httpx.HTTPError as e:
+            raise RuntimeError(f"调用 Google Search Console API 失败: {e}") from e
+
+    def _bing_submit_url_api(self, url: str) -> Dict[str, Any]:
+        """调用 Bing Webmaster API 提交 URL
+
+        使用 Bing Indexing API（https://ssl.bing.com/webmaster/api.svc/2.0/SubmitUrl）
+
+        Args:
+            url: 要提交的 URL
+
+        Returns:
+            API 响应字典
+
+        Raises:
+            RuntimeError: 凭证缺失或 API 调用失败
+        """
+        cfg = self.config
+        if not cfg.bing_api_key:
+            raise RuntimeError("Bing API key 未配置")
+        if not cfg.bing_site_url:
+            raise RuntimeError("Bing site_url 未配置")
+
+        api_url = "https://ssl.bing.com/webmaster/api.svc/2.0/SubmitUrl"
+        params = {"apikey": cfg.bing_api_key}
+        body = {"siteUrl": cfg.bing_site_url, "url": url}
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                resp = client.post(api_url, params=params, json=body)
+                if resp.status_code >= 400:
+                    raise RuntimeError(
+                        f"Bing Indexing API 返回 {resp.status_code}: {resp.text}"
+                    )
+                resp.raise_for_status()
+                return resp.json() if resp.text else {}
+        except httpx.HTTPError as e:
+            raise RuntimeError(f"调用 Bing Indexing API 失败: {e}") from e
+
+    def _google_submit_sitemap_api(self, sitemap_url: str, access_token: str) -> Dict[str, Any]:
+        """调用 Google Search Console API 提交 Sitemap
+
+        PUT /webmasters/v3/sites/{site}/sitemaps/{feedpath}
+
+        Args:
+            sitemap_url: Sitemap URL
+            access_token: OAuth2 访问令牌
+
+        Returns:
+            API 响应字典
+
+        Raises:
+            RuntimeError: 配置缺失或 API 调用失败
+        """
+        site_url = self.config.google_site_url
+        if not site_url:
+            raise RuntimeError("Google site_url 未配置，无法提交 Sitemap")
+
+        encoded_site = httpx.URL(site_url).path or site_url
+        api_url = (
+            f"https://www.googleapis.com/webmasters/v3/sites/{encoded_site}"
+            f"/sitemaps/{httpx.URL(sitemap_url).path or sitemap_url}"
+        )
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+        body = {"path": sitemap_url}
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                resp = client.put(api_url, headers=headers, json=body)
+                if resp.status_code >= 400:
+                    raise RuntimeError(
+                        f"Google Sitemap API 返回 {resp.status_code}: {resp.text}"
+                    )
+                resp.raise_for_status()
+                return resp.json() if resp.text else {}
+        except httpx.HTTPError as e:
+            raise RuntimeError(f"调用 Google Sitemap API 失败: {e}") from e
+
+    def _bing_submit_sitemap_api(self, sitemap_url: str) -> Dict[str, Any]:
+        """调用 Bing Webmaster API 提交 Sitemap
+
+        Args:
+            sitemap_url: Sitemap URL
+
+        Returns:
+            API 响应字典
+
+        Raises:
+            RuntimeError: 凭证缺失或 API 调用失败
+        """
+        cfg = self.config
+        if not cfg.bing_api_key:
+            raise RuntimeError("Bing API key 未配置")
+        if not cfg.bing_site_url:
+            raise RuntimeError("Bing site_url 未配置")
+
+        api_url = "https://ssl.bing.com/webmaster/api.svc/2.0/SubmitSitemap"
+        params = {"apikey": cfg.bing_api_key}
+        body = {"siteUrl": cfg.bing_site_url, "sitemapUrl": sitemap_url}
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                resp = client.post(api_url, params=params, json=body)
+                if resp.status_code >= 400:
+                    raise RuntimeError(
+                        f"Bing Sitemap API 返回 {resp.status_code}: {resp.text}"
+                    )
+                resp.raise_for_status()
+                return resp.json() if resp.text else {}
+        except httpx.HTTPError as e:
+            raise RuntimeError(f"调用 Bing Sitemap API 失败: {e}") from e
 
     # ==================== Google Search Console ====================
 
@@ -188,18 +429,11 @@ class SearchConsoleService:
             return result
 
         try:
-            # 这里应该调用Google Indexing API
-            # 实际实现需要使用Google API客户端库
-            # 这里是模拟实现
-            if self.config.google_refresh_token:
-                # 模拟API调用
-                result.status = IndexingStatus.SUBMITTED
-                result.message = "URL submitted to Google successfully"
-            else:
-                result.status = IndexingStatus.FAILED
-                result.message = "Google API credentials not configured"
-                result.error_code = "no_credentials"
-
+            # 调用真实 Google Indexing API：先获取 OAuth2 access_token，再提交 URL 通知
+            access_token = self._get_google_access_token()
+            self._google_indexing_api_publish(url, access_token)
+            result.status = IndexingStatus.SUBMITTED
+            result.message = "URL submitted to Google successfully"
         except Exception as e:
             result.status = IndexingStatus.FAILED
             result.message = str(e)
@@ -274,24 +508,45 @@ class SearchConsoleService:
             return analytics
 
         try:
-            # 这里应该调用Google Search Console API
-            # 实际实现需要使用Google API客户端库
-            # 这里是模拟数据
-            analytics.clicks = random.randint(100, 1000)
-            analytics.impressions = random.randint(1000, 10000)
-            analytics.ctr = round(analytics.clicks / analytics.impressions * 100, 2)
-            analytics.average_position = round(random.uniform(5, 50), 1)
+            # 调用真实 Google Search Console API 查询搜索分析数据
+            access_token = self._get_google_access_token()
+            raw = self._google_search_analytics_query(start_date, end_date, access_token)
 
-            # 模拟关键词数据
-            analytics.keywords = [
-                {"keyword": "vape", "clicks": 50, "impressions": 500, "ctr": 10.0, "position": 5.2},
-                {"keyword": "e-cigarette", "clicks": 30, "impressions": 300, "ctr": 10.0, "position": 8.5},
-            ]
+            rows = raw.get("rows", []) or []
+            total_clicks = 0
+            total_impressions = 0
+            position_sum = 0.0
+            keywords: List[Dict[str, Any]] = []
+
+            for row in rows:
+                clicks = int(row.get("clicks", 0))
+                impressions = int(row.get("impressions", 0))
+                ctr = float(row.get("ctr", 0.0)) * 100  # API 返回 0-1，转为百分比
+                position = float(row.get("position", 0.0))
+                total_clicks += clicks
+                total_impressions += impressions
+                position_sum += position
+
+                keys = row.get("keys", []) or []
+                keyword_text = keys[0] if keys else ""
+                keywords.append({
+                    "keyword": keyword_text,
+                    "clicks": clicks,
+                    "impressions": impressions,
+                    "ctr": round(ctr, 2),
+                    "position": round(position, 2),
+                })
+
+            analytics.clicks = total_clicks
+            analytics.impressions = total_impressions
+            analytics.ctr = round(total_clicks / total_impressions * 100, 2) if total_impressions else 0.0
+            analytics.average_position = round(position_sum / len(rows), 2) if rows else 0.0
+            analytics.keywords = keywords
 
             self._analytics_cache[cache_key] = analytics
 
         except Exception as e:
-            print(f"Error getting Google analytics: {e}")
+            logger.error(f"获取 Google 搜索分析数据失败: {e}")
 
         return analytics
 
@@ -309,11 +564,12 @@ class SearchConsoleService:
             return False
 
         try:
-            # 这里应该调用Google Search Console API提交sitemap
-            # 实际实现需要使用Google API客户端库
+            # 调用真实 Google Search Console API 提交 Sitemap
+            access_token = self._get_google_access_token()
+            self._google_submit_sitemap_api(sitemap_url, access_token)
             return True
         except Exception as e:
-            print(f"Error submitting sitemap to Google: {e}")
+            logger.error(f"提交 Sitemap 到 Google 失败: {e}")
             return False
 
     # ==================== Bing Webmaster Tools ====================
@@ -342,16 +598,10 @@ class SearchConsoleService:
             return result
 
         try:
-            # 这里应该调用Bing Webmaster API
-            # 实际实现需要使用Bing API
-            if self.config.bing_api_key:
-                result.status = IndexingStatus.SUBMITTED
-                result.message = "URL submitted to Bing successfully"
-            else:
-                result.status = IndexingStatus.FAILED
-                result.message = "Bing API key not configured"
-                result.error_code = "no_api_key"
-
+            # 调用真实 Bing Indexing API 提交 URL
+            self._bing_submit_url_api(url)
+            result.status = IndexingStatus.SUBMITTED
+            result.message = "URL submitted to Bing successfully"
         except Exception as e:
             result.status = IndexingStatus.FAILED
             result.message = str(e)
@@ -418,10 +668,11 @@ class SearchConsoleService:
             return False
 
         try:
-            # 这里应该调用Bing Webmaster API提交sitemap
+            # 调用真实 Bing Webmaster API 提交 Sitemap
+            self._bing_submit_sitemap_api(sitemap_url)
             return True
         except Exception as e:
-            print(f"Error submitting sitemap to Bing: {e}")
+            logger.error(f"提交 Sitemap 到 Bing 失败: {e}")
             return False
 
     # ==================== 通用方法 ====================
@@ -502,7 +753,71 @@ class SearchConsoleService:
 
     # ==================== 排名追踪 ====================
 
-    def track_keyword_ranking(self, keyword: str, url: str, 
+    def _fetch_keyword_position_from_google(self, keyword: str) -> Optional[int]:
+        """通过 Google Search Console API 获取关键词的真实平均排名
+
+        查询过去 7 天内该关键词的搜索表现，返回平均排名（取整）。
+        若无数据或凭证缺失，返回 None。
+
+        Args:
+            keyword: 关键词
+
+        Returns:
+            平均排名（整数），无数据时返回 None
+        """
+        try:
+            access_token = self._get_google_access_token()
+        except Exception as e:
+            logger.debug(f"获取 Google access_token 失败，无法查询关键词排名: {e}")
+            return None
+
+        end_date = datetime.utcnow().date()
+        start_date = end_date - timedelta(days=7)
+        site_url = self.config.google_site_url
+        if not site_url:
+            logger.debug("Google site_url 未配置，无法查询关键词排名")
+            return None
+
+        encoded_site = httpx.URL(site_url).path or site_url
+        api_url = f"https://www.googleapis.com/webmasters/v3/sites/{encoded_site}/searchAnalytics/query"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "startDate": start_date.strftime("%Y-%m-%d"),
+            "endDate": end_date.strftime("%Y-%m-%d"),
+            "dimensions": ["query"],
+            "dimensionFilterGroups": [{
+                "filters": [{
+                    "dimension": "query",
+                    "operator": "equals",
+                    "expression": keyword,
+                }]
+            }],
+            "rowLimit": 1,
+        }
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                resp = client.post(api_url, headers=headers, json=body)
+                if resp.status_code >= 400:
+                    logger.debug(
+                        f"Google Search Console 关键词排名查询返回 {resp.status_code}: {resp.text}"
+                    )
+                    return None
+                resp.raise_for_status()
+                data = resp.json() if resp.text else {}
+        except httpx.HTTPError as e:
+            logger.debug(f"调用 Google Search Console 关键词排名查询失败: {e}")
+            return None
+
+        rows = data.get("rows", []) or []
+        if not rows:
+            return None
+        position = float(rows[0].get("position", 0.0))
+        return int(round(position))
+
+    def track_keyword_ranking(self, keyword: str, url: str,
                               search_engine: SearchEngine = SearchEngine.GOOGLE,
                               country: str = "", device: str = "desktop") -> RankingData:
         """
@@ -521,16 +836,19 @@ class SearchConsoleService:
         # 查找现有的排名数据
         existing = None
         for ranking in self._rankings:
-            if (ranking.keyword == keyword and 
-                ranking.url == url and 
+            if (ranking.keyword == keyword and
+                ranking.url == url and
                 ranking.search_engine == search_engine and
                 ranking.country == country and
                 ranking.device == device):
                 existing = ranking
                 break
 
-        # 模拟获取新排名
-        new_position = random.randint(1, 100)
+        # 通过真实 API 获取关键词排名；无数据时记为 0（表示未进入索引或无曝光）
+        fetched = None
+        if search_engine == SearchEngine.GOOGLE:
+            fetched = self._fetch_keyword_position_from_google(keyword)
+        new_position = fetched if fetched is not None else 0
 
         if existing:
             previous_position = existing.position
@@ -657,7 +975,3 @@ def get_search_console_service() -> SearchConsoleService:
     if _search_console_service is None:
         _search_console_service = SearchConsoleService()
     return _search_console_service
-
-
-# 导入random（放在后面避免影响类型注解）
-import random

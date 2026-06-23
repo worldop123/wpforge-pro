@@ -374,7 +374,9 @@ import {
   generateSEOTitle,
   generateMetaDescription,
   generateSchema as generateSchemaApi,
-  getSEOChecklist
+  getSEOChecklist,
+  getSEOOverview,
+  getIndexingData
 } from '@/api/seo'
 
 const activeTab = ref('analyze')
@@ -418,10 +420,10 @@ const batchSubmitForm = reactive({
 })
 
 const overview = ref({
-  avgScore: 75,
-  goodPages: 12,
-  warningPages: 5,
-  indexedPages: 28
+  avgScore: 0,
+  goodPages: 0,
+  warningPages: 0,
+  indexedPages: 0
 })
 
 const submissionStatus = ref([
@@ -506,23 +508,9 @@ const doAnalyze = async () => {
     analysisResult.value = res.data || res
     ElMessage.success('分析完成')
   } catch (error: any) {
-    ElMessage.error('分析失败：' + (error.message || ''))
-    // 使用模拟数据
-    analysisResult.value = {
-      overall_score: 75,
-      content_score: 80,
-      technical_score: 70,
-      performance_score: 72,
-      title: '示例页面标题',
-      description: '示例页面描述',
-      issues: [
-        { type: 'title', severity: 'warning', message: '标题过短: 25字符，建议30-60字符', suggestion: '增加标题长度，包含主要关键词' },
-        { type: 'description', severity: 'error', message: '缺少meta description', suggestion: '添加70-160字符的描述' },
-        { type: 'images', severity: 'warning', message: '有5张图片缺少alt属性', suggestion: '为所有图片添加描述性alt' },
-        { type: 'content', severity: 'info', message: '内容一般: 450字，建议1000字以上效果更好', suggestion: '扩充内容，提供更多价值' },
-        { type: 'canonical', severity: 'warning', message: '缺少canonical标签', suggestion: '添加canonical标签避免重复内容' }
-      ]
-    }
+    // 失败时不回退 mock 数据，仅显示错误提示
+    ElMessage.error('分析失败：' + (error.message || '请检查URL是否可访问'))
+    analysisResult.value = null
   } finally {
     analyzing.value = false
   }
@@ -664,13 +652,13 @@ const batchSubmit = async () => {
 const loadIndexingData = async () => {
   indexingLoading.value = true
   try {
-    // 模拟数据
-    indexingData.value = [
-      { url: 'https://example.com/', google: true, bing: true, baidu: true, last_check: '2024-01-15 10:30' },
-      { url: 'https://example.com/products', google: true, bing: true, baidu: false, last_check: '2024-01-15 10:30' },
-      { url: 'https://example.com/about', google: true, bing: false, baidu: false, last_check: '2024-01-14 16:45' },
-      { url: 'https://example.com/blog/post-1', google: false, bing: false, baidu: false, last_check: '2024-01-14 14:00' }
-    ]
+    // 调用真实 search_console 收录数据 API
+    const res: any = await getIndexingData({ limit: 50 })
+    const data = res.data || res
+    indexingData.value = data?.items || []
+  } catch (error: any) {
+    ElMessage.error('加载收录数据失败：' + (error.message || ''))
+    indexingData.value = []
   } finally {
     indexingLoading.value = false
   }
@@ -694,7 +682,24 @@ const loadChecklist = async () => {
   }
 }
 
+// 加载真实 SEO 概览统计
+const loadOverview = async () => {
+  try {
+    const res: any = await getSEOOverview()
+    const data = res.data || res
+    if (data) {
+      overview.value.avgScore = data.avgScore || 0
+      overview.value.goodPages = data.goodPages || 0
+      overview.value.warningPages = data.warningPages || 0
+      overview.value.indexedPages = data.indexedPages || 0
+    }
+  } catch (error) {
+    // 静默失败，使用默认值
+  }
+}
+
 onMounted(() => {
+  loadOverview()
   loadChecklist()
   loadIndexingData()
 })

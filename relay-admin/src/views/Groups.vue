@@ -68,7 +68,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
-import { getGroups, createGroup } from '@/api/sites'
+import { getGroups, createGroup, deleteGroup as deleteGroupApi } from '@/api/sites'
 import dayjs from 'dayjs'
 
 const loading = ref(false)
@@ -164,8 +164,25 @@ async function deleteGroup(row) {
   } catch (err) {
     return
   }
-  
-  ElMessage.info('删除功能待实现')
+
+  // 调用真实删除 API
+  const groupId = row.group_id || row.id
+  if (!groupId) {
+    ElMessage.error('无法获取分组ID')
+    return
+  }
+
+  try {
+    const result = await deleteGroupApi(groupId)
+    if (result.success) {
+      ElMessage.success('删除成功')
+      loadGroups()
+    } else {
+      ElMessage.error(result.error || '删除失败')
+    }
+  } catch (err) {
+    ElMessage.error('删除失败，请稍后重试')
+  }
 }
 
 onMounted(() => {

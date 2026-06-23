@@ -2,11 +2,15 @@
 SEO API - 全自动SEO优化
 """
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from datetime import datetime, timedelta
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
+from app.models.site import Site
+from app.models.task import Task
 from app.schemas import (
     SEOAuditRequest,
     SEOAuditResponse,
@@ -15,6 +19,154 @@ from app.schemas import (
 )
 
 router = APIRouter(prefix="/seo", tags=["SEO优化"])
+
+
+@router.get("/overview", response_model=SuccessResponse)
+async def get_seo_overview(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """获取SEO概览统计（聚合用户所有站点的SEO数据）"""
+    # 获取用户站点
+    sites = db.query(Site).filter(
+        Site.user_id == current_user.id,
+        Site.is_deleted == False
+    ).all()
+
+    total_sites = len(sites)
+
+    # 统计 SEO 相关任务，按状态聚合
+    seo_task_stats = db.query(
+        Task.status,
+        func.count(Task.id)
+    ).filter(
+        Task.user_id == current_user.id,
+        Task.task_type == "seo"
+    ).group_by(Task.status).all()
+
+    seo_tasks = {"total": 0, "completed": 0, "running": 0, "failed": 0, "pending": 0}
+    for st, cnt in seo_task_stats:
+        if st in seo_tasks:
+            seo_tasks[st] = cnt
+        seo_tasks["total"] += cnt
+
+    # 基于已完成的 SEO 任务计算平均分
+    completed_seo_tasks = db.query(Task).filter(
+        Task.user_id == current_user.id,
+        Task.task_type == "seo",
+        Task.status == "completed"
+    ).all()
+
+    scores = []
+    good_pages = 0
+    warning_pages = 0
+    bad_pages = 0
+    for t in completed_seo_tasks:
+        result = t.result or {}
+        score = result.get("overall_score") if isinstance(result, dict) else None
+        if score is not None:
+            scores.append(score)
+            if score >= 80:
+                good_pages += 1
+            elif score >= 60:
+                warning_pages += 1
+            else:
+                bad_pages += 1
+
+    avg_score = round(sum(scores) / len(scores)) if scores else 0
+
+    # 收录页面数：从已完成 SEO 任务的 result 中聚合 indexed 字段
+    indexed_pages = 0
+    for t in completed_seo_tasks:
+        result = t.result or {}
+        if isinstance(result, dict):
+            indexed_pages += result.get("indexed_pages", 0) or 0
+
+    return SuccessResponse(
+        message="获取成功",
+        data={
+            "avgScore": avg_score,
+            "goodPages": good_pages,
+            "warningPages": warning_pages,
+            "badPages": bad_pages,
+            "indexedPages": indexed_pages,
+            "totalSites": total_sites,
+            "seoTasks": seo_tasks,
+        }
+    )
+
+
+@router.get("/indexing", response_model=SuccessResponse)
+async def get_indexing_data(
+    site_id: Optional[int] = Query(None, description="站点ID过滤"),
+    limit: int = Query(50, ge=1, le=200, description="返回数量"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """获取页面收录数据（基于搜索引擎提交服务）"""
+    from app.services.search_console_service import (
+        search_submission_service,
+        SearchEngine,
+    )
+
+    # 获取用户站点
+    site_query = db.query(Site).filter(
+        Site.user_id == current_user.id,
+        Site.is_deleted == False
+    )
+    if site_id:
+        site_query = site_query.filter(Site.id == site_id)
+
+    sites = site_query.limit(limit).all()
+
+    # 指定要检查的搜索引擎
+    engines = [SearchEngine.GOOGLE, SearchEngine.BING, SearchEngine.BAIDU]
+
+    indexing_rows = []
+    for site in sites:
+        try:
+            # 检查站点首页在各搜索引擎的收录状态
+            results = search_submission_service.check_indexing_status(
+                url=site.wp_url,
+                search_engines=engines,
+            )
+            row = {
+                "url": site.wp_url,
+                "site_id": site.id,
+                "site_name": site.name,
+                "google": False,
+                "bing": False,
+                "baidu": False,
+                "last_check": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            }
+            for engine, result in results.items():
+                if engine == SearchEngine.GOOGLE.value:
+                    row["google"] = bool(result.indexed)
+                elif engine == SearchEngine.BING.value:
+                    row["bing"] = bool(result.indexed)
+                elif engine == SearchEngine.BAIDU.value:
+                    row["baidu"] = bool(result.indexed)
+            indexing_rows.append(row)
+        except Exception as e:
+            # 单个站点失败不影响整体返回
+            indexing_rows.append({
+                "url": site.wp_url,
+                "site_id": site.id,
+                "site_name": site.name,
+                "google": False,
+                "bing": False,
+                "baidu": False,
+                "last_check": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "error": str(e),
+            })
+
+    return SuccessResponse(
+        message="获取成功",
+        data={
+            "total": len(indexing_rows),
+            "items": indexing_rows,
+        }
+    )
 
 
 @router.post("/audit", response_model=SuccessResponse)

@@ -5,7 +5,11 @@
 from app.services.proxy.network.request_headers import RequestHeaderGenerator
 from app.services.proxy.network.cookie_handler import CookieHandler
 from app.services.proxy.network.cache_simulator import CacheSimulator
-from app.services.proxy.network.tls_fingerprint import TLSFingerprintGenerator
+from app.services.proxy.network.tls_fingerprint import (
+    TLSFingerprintGenerator,
+    TLSClient,
+    create_tls_client,
+)
 from app.services.proxy.network.http2_fingerprint import HTTP2FingerprintGenerator
 
 __all__ = [
@@ -13,5 +17,7 @@ __all__ = [
     "CookieHandler",
     "CacheSimulator",
     "TLSFingerprintGenerator",
+    "TLSClient",
+    "create_tls_client",
     "HTTP2FingerprintGenerator",
 ]

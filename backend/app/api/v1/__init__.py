@@ -14,6 +14,7 @@ from app.api.v1.wordpress import router as wordpress_router
 from app.api.v1.ai import router as ai_router
 from app.api.v1.proxy import router as proxy_router
 from app.api.v1.monitoring import router as monitoring_router
+from app.api.v1.funnel import router as funnel_router
 
 api_v1_router = APIRouter(prefix="/v1", tags=["API v1"])
 
@@ -30,3 +31,4 @@ api_v1_router.include_router(wordpress_router)
 api_v1_router.include_router(ai_router)
 api_v1_router.include_router(proxy_router)
 api_v1_router.include_router(monitoring_router)
+api_v1_router.include_router(funnel_router)

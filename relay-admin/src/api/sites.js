@@ -40,6 +40,11 @@ export function createGroup(data) {
   return request.post('/groups', data)
 }
 
+// 删除分组
+export function deleteGroup(groupId) {
+  return request.delete(`/groups/${groupId}`)
+}
+
 // 获取标签列表
 export function getTags() {
   return request.get('/tags')
@@ -69,6 +74,7 @@ export default {
   regenerateToken,
   getGroups,
   createGroup,
+  deleteGroup,
   getTags,
   createTag,
   getStats,

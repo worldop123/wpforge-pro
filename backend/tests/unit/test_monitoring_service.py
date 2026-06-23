@@ -1138,7 +1138,8 @@ class TestContentChangeMonitor:
 
     def test_simulated_content_when_none(self):
         monitor = ContentChangeMonitor()
-        result = monitor.check("https://example.com")
+        with patch.object(monitor, "_fetch_url_content", return_value="fetched-content"):
+            result = monitor.check("https://example.com")
         assert result.new_hash != ""
 
 
@@ -1147,7 +1148,8 @@ class TestKeywordRankingMonitor:
 
     def test_first_check(self):
         monitor = KeywordRankingMonitor()
-        result = monitor.check("wordpress", "https://example.com")
+        with patch.object(monitor, "_fetch_ranking", return_value=5):
+            result = monitor.check("wordpress", "https://example.com")
         assert result.keyword == "wordpress"
         assert result.position > 0
         assert result.previous_position is None
@@ -1155,15 +1157,17 @@ class TestKeywordRankingMonitor:
 
     def test_second_check_tracks_change(self):
         monitor = KeywordRankingMonitor()
-        first = monitor.check("wordpress", "https://example.com")
-        second = monitor.check("wordpress", "https://example.com")
+        with patch.object(monitor, "_fetch_ranking", side_effect=[10, 7]):
+            first = monitor.check("wordpress", "https://example.com")
+            second = monitor.check("wordpress", "https://example.com")
         assert second.previous_position == first.position
         assert second.change == first.position - second.position
 
     def test_get_history(self):
         monitor = KeywordRankingMonitor()
-        monitor.check("wordpress", "https://example.com")
-        monitor.check("wordpress", "https://example.com")
+        with patch.object(monitor, "_fetch_ranking", return_value=5):
+            monitor.check("wordpress", "https://example.com")
+            monitor.check("wordpress", "https://example.com")
         history = monitor.get_history("wordpress", "https://example.com")
         assert len(history) == 2
 
@@ -1174,8 +1178,9 @@ class TestKeywordRankingMonitor:
 
     def test_different_search_engines(self):
         monitor = KeywordRankingMonitor()
-        monitor.check("wordpress", "https://example.com", "google")
-        monitor.check("wordpress", "https://example.com", "bing")
+        with patch.object(monitor, "_fetch_ranking", return_value=5):
+            monitor.check("wordpress", "https://example.com", "google")
+            monitor.check("wordpress", "https://example.com", "bing")
         google_history = monitor.get_history("wordpress", "https://example.com", "google")
         bing_history = monitor.get_history("wordpress", "https://example.com", "bing")
         assert len(google_history) == 1
@@ -1187,21 +1192,29 @@ class TestBacklinkMonitor:
 
     def test_first_check(self):
         monitor = BacklinkMonitor()
-        result = monitor.check("https://example.com")
+        with patch.object(monitor, "_fetch_backlink_count",
+                          return_value={"backlink_count": 100, "referring_domains": 30}):
+            result = monitor.check("https://example.com")
         assert result.backlink_count > 0
         assert result.previous_count is None
         assert result.referring_domains > 0
 
     def test_second_check_tracks_change(self):
         monitor = BacklinkMonitor()
-        first = monitor.check("https://example.com")
-        second = monitor.check("https://example.com")
+        with patch.object(monitor, "_fetch_backlink_count", side_effect=[
+            {"backlink_count": 100, "referring_domains": 30},
+            {"backlink_count": 120, "referring_domains": 35},
+        ]):
+            first = monitor.check("https://example.com")
+            second = monitor.check("https://example.com")
         assert second.previous_count == first.backlink_count
 
     def test_get_history(self):
         monitor = BacklinkMonitor()
-        monitor.check("https://example.com")
-        monitor.check("https://example.com")
+        with patch.object(monitor, "_fetch_backlink_count",
+                          return_value={"backlink_count": 100, "referring_domains": 30}):
+            monitor.check("https://example.com")
+            monitor.check("https://example.com")
         history = monitor.get_history("https://example.com")
         assert len(history) == 2
 
@@ -1215,7 +1228,14 @@ class TestTrafficMonitor:
 
     def test_check(self):
         monitor = TrafficMonitor()
-        result = monitor.check("https://example.com")
+        with patch.object(monitor, "_fetch_traffic_stats", return_value={
+            "visits": 1000,
+            "unique_visitors": 800,
+            "page_views": 2500,
+            "bounce_rate": 0.35,
+            "avg_session_duration": 300.5,
+        }):
+            result = monitor.check("https://example.com")
         assert result.visits > 0
         assert result.unique_visitors > 0
         assert result.page_views > 0
@@ -1223,8 +1243,12 @@ class TestTrafficMonitor:
 
     def test_get_history(self):
         monitor = TrafficMonitor()
-        monitor.check("https://example.com")
-        monitor.check("https://example.com")
+        with patch.object(monitor, "_fetch_traffic_stats", return_value={
+            "visits": 1000, "unique_visitors": 800, "page_views": 2500,
+            "bounce_rate": 0.35, "avg_session_duration": 300.5,
+        }):
+            monitor.check("https://example.com")
+            monitor.check("https://example.com")
         history = monitor.get_history("https://example.com")
         assert len(history) == 2
 
@@ -1269,20 +1293,23 @@ class TestWebhookAlertSender:
     def test_send_feishu(self):
         sender = WebhookAlertSender()
         sender.register_webhook(WebhookType.FEISHU, "https://open.feishu.cn/hook/xxx")
-        result = sender.send(WebhookType.FEISHU, self._make_alert())
+        with patch.object(sender, "_post_webhook", return_value={"success": True}):
+            result = sender.send(WebhookType.FEISHU, self._make_alert())
         assert result["success"] is True
         assert result["webhook_type"] == "feishu"
 
     def test_send_dingtalk(self):
         sender = WebhookAlertSender()
         sender.register_webhook(WebhookType.DINGTALK, "https://oapi.dingtalk.com/hook/xxx")
-        result = sender.send(WebhookType.DINGTALK, self._make_alert())
+        with patch.object(sender, "_post_webhook", return_value={"success": True}):
+            result = sender.send(WebhookType.DINGTALK, self._make_alert())
         assert result["success"] is True
 
     def test_send_wecom(self):
         sender = WebhookAlertSender()
         sender.register_webhook(WebhookType.WECOM, "https://qyapi.weixin.qq.com/hook/xxx")
-        result = sender.send(WebhookType.WECOM, self._make_alert())
+        with patch.object(sender, "_post_webhook", return_value={"success": True}):
+            result = sender.send(WebhookType.WECOM, self._make_alert())
         assert result["success"] is True
 
     def test_format_feishu_message(self):
@@ -1307,14 +1334,16 @@ class TestWebhookAlertSender:
         sender = WebhookAlertSender()
         sender.register_webhook(WebhookType.FEISHU, "https://open.feishu.cn/hook/xxx")
         sender.register_webhook(WebhookType.DINGTALK, "https://oapi.dingtalk.com/hook/xxx")
-        results = sender.send_to_all(self._make_alert())
+        with patch.object(sender, "_post_webhook", return_value={"success": True}):
+            results = sender.send_to_all(self._make_alert())
         assert len(results) == 2
         assert all(r["success"] for r in results.values())
 
     def test_get_send_history(self):
         sender = WebhookAlertSender()
         sender.register_webhook(WebhookType.FEISHU, "https://open.feishu.cn/hook/xxx")
-        sender.send(WebhookType.FEISHU, self._make_alert())
+        with patch.object(sender, "_post_webhook", return_value={"success": True}):
+            sender.send(WebhookType.FEISHU, self._make_alert())
         history = sender.get_send_history()
         assert len(history) == 1
 
@@ -1343,7 +1372,8 @@ class TestEmailAlertSender:
             "smtp.example.com", 587, "user", "pass",
             "from@example.com", ["to@example.com"]
         )
-        result = sender.send(self._make_alert())
+        with patch.object(sender, "_send_smtp"):
+            result = sender.send(self._make_alert())
         assert result["success"] is True
         assert "subject" in result
 
@@ -1357,7 +1387,8 @@ class TestEmailAlertSender:
     def test_get_send_history(self):
         sender = EmailAlertSender()
         sender.configure("smtp", 587, "u", "p", "f@e.com", ["t@e.com"])
-        sender.send(self._make_alert())
+        with patch.object(sender, "_send_smtp"):
+            sender.send(self._make_alert())
         history = sender.get_send_history()
         assert len(history) == 1
 
@@ -1661,17 +1692,24 @@ class TestAsyncMonitoringMethods:
         assert result.changed is False
 
     def test_async_check_keyword_ranking(self):
-        result = asyncio.run(async_check_keyword_ranking("wordpress", "https://example.com"))
+        with patch.object(KeywordRankingMonitor, "_fetch_ranking", return_value=5):
+            result = asyncio.run(async_check_keyword_ranking("wordpress", "https://example.com"))
         assert isinstance(result, KeywordRankingResult)
         assert result.keyword == "wordpress"
 
     def test_async_check_backlinks(self):
-        result = asyncio.run(async_check_backlinks("https://example.com"))
+        with patch.object(BacklinkMonitor, "_fetch_backlink_count",
+                          return_value={"backlink_count": 100, "referring_domains": 30}):
+            result = asyncio.run(async_check_backlinks("https://example.com"))
         assert isinstance(result, BacklinkResult)
         assert result.backlink_count > 0
 
     def test_async_check_traffic(self):
-        result = asyncio.run(async_check_traffic("https://example.com"))
+        with patch.object(TrafficMonitor, "_fetch_traffic_stats", return_value={
+            "visits": 1000, "unique_visitors": 800, "page_views": 2500,
+            "bounce_rate": 0.35, "avg_session_duration": 300.5,
+        }):
+            result = asyncio.run(async_check_traffic("https://example.com"))
         assert isinstance(result, TrafficResult)
         assert result.visits > 0
 
@@ -1685,13 +1723,21 @@ class TestAsyncMonitoringMethods:
             target="https://example.com",
             message="down",
         )
-        result = asyncio.run(async_send_webhook_alert(WebhookType.FEISHU, alert, sender))
+        with patch.object(sender, "_post_webhook", return_value={"success": True}):
+            result = asyncio.run(async_send_webhook_alert(WebhookType.FEISHU, alert, sender))
         assert result["success"] is True
 
     def test_async_monitor_site_full(self):
         mock_response = MagicMock()
         mock_response.getcode.return_value = 200
-        with patch("urllib.request.urlopen", return_value=mock_response):
+        with patch("urllib.request.urlopen", return_value=mock_response), \
+             patch.object(KeywordRankingMonitor, "_fetch_ranking", return_value=5), \
+             patch.object(BacklinkMonitor, "_fetch_backlink_count",
+                          return_value={"backlink_count": 100, "referring_domains": 30}), \
+             patch.object(TrafficMonitor, "_fetch_traffic_stats", return_value={
+                 "visits": 1000, "unique_visitors": 800, "page_views": 2500,
+                 "bounce_rate": 0.35, "avg_session_duration": 300.5,
+             }):
             results = asyncio.run(async_monitor_site_full("https://example.com"))
         assert "uptime" in results
         assert "content_change" in results
@@ -1702,7 +1748,13 @@ class TestAsyncMonitoringMethods:
         mock_response = MagicMock()
         mock_response.getcode.return_value = 200
         # HTTP站点不应触发SSL检查
-        with patch("urllib.request.urlopen", return_value=mock_response):
+        with patch("urllib.request.urlopen", return_value=mock_response), \
+             patch.object(BacklinkMonitor, "_fetch_backlink_count",
+                          return_value={"backlink_count": 100, "referring_domains": 30}), \
+             patch.object(TrafficMonitor, "_fetch_traffic_stats", return_value={
+                 "visits": 1000, "unique_visitors": 800, "page_views": 2500,
+                 "bounce_rate": 0.35, "avg_session_duration": 300.5,
+             }):
             results = asyncio.run(async_monitor_site_full("http://example.com"))
         assert "ssl" not in results
         assert "uptime" in results

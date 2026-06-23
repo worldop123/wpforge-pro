@@ -223,8 +223,8 @@
   </div>
 </template>
 
-<script setup>
-import { ref, reactive, nextTick } from 'vue'
+<script setup lang="ts">
+import { ref, reactive, nextTick, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   Monitor,
@@ -234,10 +234,11 @@ import {
   Shop,
   Document,
   Briefcase,
-  Image,
   DataLine,
   MagicStick
 } from '@element-plus/icons-vue'
+import { aiAnalyzeSite } from '@/api/ai'
+import { createTask, getTask } from '@/api/tasks'
 
 const currentStep = ref(1)
 const analyzing = ref(false)
@@ -246,7 +247,11 @@ const analysisProgress = ref(0)
 const analysisStatus = ref('')
 const cloneProgress = ref(0)
 const currentTask = ref('')
-const logOutput = ref(null)
+const logOutput = ref<HTMLElement | null>(null)
+
+// 当前建站任务ID（用于轮询进度）
+let currentTaskId: number | null = null
+let pollTimer: ReturnType<typeof setInterval> | null = null
 
 const form = reactive({
   targetUrl: '',
@@ -264,15 +269,17 @@ const quickTemplates = [
   { id: 'vape', name: '电子烟', desc: '跨境电子烟专用', icon: 'MagicStick' }
 ]
 
-const analysisResult = reactive({
-  platform: 'WordPress + WooCommerce',
-  pageCount: 12,
-  productCount: 48,
-  language: 'English',
-  builder: 'Elementor',
-  colors: ['#2563eb', '#1e40af', '#f59e0b', '#1f2937', '#f3f4f6'],
-  primaryFont: 'Inter',
-  layoutStyle: '现代简约'
+// 分析结果（字段来自 /ai/analyze-site 真实接口）
+const analysisResult = reactive<any>({
+  site_type: '',
+  confidence: 0,
+  language: '',
+  currency: '',
+  pagination_type: '',
+  product_list_selector: '',
+  detected_fields: [] as any[],
+  recommendations: [] as any[],
+  has_anti_detection: false,
 })
 
 const cloneSteps = ref([
@@ -285,15 +292,16 @@ const cloneSteps = ref([
   { title: '性能优化', desc: '缓存、压缩、CDN配置', status: 'pending' }
 ])
 
-const buildLogs = ref([])
+const buildLogs = ref<Array<{ time: string; message: string; type: string }>>([])
 
 const siteResult = reactive({
-  pages: 12,
-  products: 48,
-  images: 156,
-  duration: 185
+  pages: 0,
+  products: 0,
+  images: 0,
+  duration: 0
 })
 
+// 调用真实网站分析 API
 const analyzeSite = async () => {
   if (!form.targetUrl) {
     ElMessage.warning('请输入目标网站URL')
@@ -304,31 +312,47 @@ const analyzeSite = async () => {
   analysisProgress.value = 0
   analysisStatus.value = '正在连接目标网站...'
 
+  // 分析进度模拟（接口为单次请求，用进度提示用户体验）
   const steps = [
-    { progress: 20, status: '正在分析网站结构...' },
-    { progress: 40, status: '正在识别页面构建器...' },
-    { progress: 60, status: '正在提取配色方案...' },
-    { progress: 80, status: '正在分析内容结构...' },
-    { progress: 100, status: '分析完成！' }
+    { progress: 30, status: '正在分析网站结构...' },
+    { progress: 60, status: '正在识别页面元素...' },
+    { progress: 90, status: '正在生成分析报告...' },
   ]
-
   for (const step of steps) {
-    await new Promise(resolve => setTimeout(resolve, 800))
+    await new Promise(resolve => setTimeout(resolve, 400))
     analysisProgress.value = step.progress
     analysisStatus.value = step.status
   }
 
-  await new Promise(resolve => setTimeout(resolve, 500))
-  analyzing.value = false
-  currentStep.value = 2
+  try {
+    const res: any = await aiAnalyzeSite({ url: form.targetUrl })
+    const data = res.data || res
+    analysisResult.site_type = data.site_type || 'unknown'
+    analysisResult.confidence = data.confidence || 0
+    analysisResult.language = data.language || form.targetLanguage
+    analysisResult.currency = data.currency || ''
+    analysisResult.pagination_type = data.pagination_type || ''
+    analysisResult.product_list_selector = data.product_list_selector || ''
+    analysisResult.detected_fields = data.detected_fields || []
+    analysisResult.recommendations = data.recommendations || []
+    analysisResult.has_anti_detection = !!data.has_anti_detection
+    analysisProgress.value = 100
+    analysisStatus.value = '分析完成！'
+    await new Promise(resolve => setTimeout(resolve, 300))
+    analyzing.value = false
+    currentStep.value = 2
+  } catch (error: any) {
+    analyzing.value = false
+    ElMessage.error('网站分析失败：' + (error?.message || '请检查URL或稍后重试'))
+  }
 }
 
-const selectTemplate = (template) => {
+const selectTemplate = (template: any) => {
   form.industry = template.id
   ElMessage.info(`已选择 ${template.name} 模板`)
 }
 
-const addLog = (message, type = 'info') => {
+const addLog = (message: string, type = 'info') => {
   const now = new Date()
   const time = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`
   buildLogs.value.push({ time, message, type })
@@ -339,42 +363,99 @@ const addLog = (message, type = 'info') => {
   })
 }
 
+// 根据任务进度更新步骤状态
+const updateStepsByProgress = (progress: number) => {
+  const stepCount = cloneSteps.value.length
+  const activeIndex = Math.min(Math.floor(progress / (100 / stepCount)), stepCount - 1)
+  cloneSteps.value.forEach((step, idx) => {
+    if (idx < activeIndex) step.status = 'done'
+    else if (idx === activeIndex && progress < 100) step.status = 'active'
+    else if (progress >= 100) step.status = 'done'
+    else step.status = 'pending'
+  })
+}
+
+// 轮询任务进度
+const pollTaskProgress = () => {
+  if (pollTimer) clearInterval(pollTimer)
+  pollTimer = setInterval(async () => {
+    if (!currentTaskId) return
+    try {
+      const res: any = await getTask(currentTaskId)
+      const task = res.data || res
+      const progress = task.progress || 0
+      cloneProgress.value = progress
+      updateStepsByProgress(progress)
+
+      if (task.status === 'completed') {
+        stopPolling()
+        cloneProgress.value = 100
+        updateStepsByProgress(100)
+        addLog('✓ 建站任务完成', 'success')
+        // 填充结果统计
+        const params = task.params || {}
+        siteResult.pages = params.pages || 0
+        siteResult.products = params.products || 0
+        siteResult.images = params.images || 0
+        siteResult.duration = params.duration || 0
+        cloning.value = false
+        currentStep.value = 4
+        ElMessage.success('网站创建成功！')
+      } else if (task.status === 'failed') {
+        stopPolling()
+        cloning.value = false
+        addLog('✗ 建站任务失败: ' + (task.error_message || '未知错误'), 'error')
+        ElMessage.error('建站任务失败')
+      } else {
+        currentTask.value = task.status === 'pending' ? '任务排队中...' : '正在建站...'
+      }
+    } catch (error) {
+      // 轮询失败时静默，等待下一次
+    }
+  }, 2000)
+}
+
+const stopPolling = () => {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+// 创建真实建站任务并轮询进度
 const startCloning = async () => {
   cloning.value = true
   cloneProgress.value = 0
-  currentTask.value = '准备开始建站...'
+  currentTask.value = '正在创建建站任务...'
   buildLogs.value = []
+  cloneSteps.value.forEach(s => (s.status = 'pending'))
 
   addLog('开始建站流程', 'success')
   addLog('目标网站: ' + form.targetUrl)
 
-  const tasks = [
-    { step: 0, progress: 15, task: '正在爬取网站内容...', log: '开始爬取网站内容' },
-    { step: 1, progress: 30, task: '正在进行内容原创化...', log: 'AI正在改写文本内容' },
-    { step: 2, progress: 40, task: '正在生成主题配置...', log: '提取配色方案和字体' },
-    { step: 3, progress: 55, task: '正在创建WordPress站点...', log: '安装WPForge主题' },
-    { step: 4, progress: 70, task: '正在导入内容...', log: '导入页面和产品数据' },
-    { step: 5, progress: 85, task: '正在进行SEO优化...', log: '自动生成Schema标记' },
-    { step: 6, progress: 100, task: '建站完成！', log: '网站创建成功！' }
-  ]
-
-  for (let i = 0; i < tasks.length; i++) {
-    const task = tasks[i]
-    cloneSteps.value[i].status = 'active'
-    currentTask.value = task.task
-    addLog(task.log)
-
-    await new Promise(resolve => setTimeout(resolve, 1500))
-
-    cloneProgress.value = task.progress
-    cloneSteps.value[i].status = 'done'
-    addLog(`✓ ${cloneSteps.value[i].title} 完成`, 'success')
+  try {
+    const res: any = await createTask({
+      name: form.siteName || `一键建站: ${form.targetUrl}`,
+      task_type: 'cloning',
+      priority: 1,
+      params: {
+        target_url: form.targetUrl,
+        site_name: form.siteName,
+        industry: form.industry,
+        target_language: form.targetLanguage,
+        analysis: { ...analysisResult },
+      },
+    })
+    const task = res.data || res
+    currentTaskId = task.id
+    addLog(`建站任务已创建（ID: ${task.id}）`, 'success')
+    currentTask.value = '任务已提交，等待执行...'
+    pollTaskProgress()
+  } catch (error: any) {
+    cloning.value = false
+    addLog('✗ 创建建站任务失败: ' + (error?.message || ''), 'error')
+    ElMessage.error('创建建站任务失败：' + (error?.message || ''))
   }
-
-  await new Promise(resolve => setTimeout(resolve, 500))
-  cloning.value = false
-  currentStep.value = 4
-  ElMessage.success('网站创建成功！')
 }
 
 const viewSite = () => {
@@ -386,10 +467,19 @@ const goToAdmin = () => {
 }
 
 const startNew = () => {
+  stopPolling()
+  currentTaskId = null
   currentStep.value = 1
   form.targetUrl = ''
   form.siteName = ''
+  cloneProgress.value = 0
+  buildLogs.value = []
+  cloneSteps.value.forEach(s => (s.status = 'pending'))
 }
+
+onBeforeUnmount(() => {
+  stopPolling()
+})
 </script>
 
 <style scoped>

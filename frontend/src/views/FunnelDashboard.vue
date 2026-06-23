@@ -1,5 +1,5 @@
 <template>
-  <div class="funnel-dashboard">
+  <div class="funnel-dashboard" v-loading="loading" element-loading-text="加载漏斗数据中...">
     <!-- 页面标题 -->
     <div class="page-header">
       <div>
@@ -7,7 +7,7 @@
         <p>多站点电商转化数据集中管理与分析</p>
       </div>
       <div class="header-actions">
-        <el-select v-model="timeRange" style="width: 150px">
+        <el-select v-model="timeRange" style="width: 150px" @change="loadAll">
           <el-option label="今天" value="today" />
           <el-option label="昨天" value="yesterday" />
           <el-option label="近7天" value="7days" />
@@ -15,7 +15,7 @@
           <el-option label="本月" value="thisMonth" />
           <el-option label="上月" value="lastMonth" />
         </el-select>
-        <el-button type="primary" @click="refreshData">
+        <el-button type="primary" @click="loadAll">
           <el-icon><Refresh /></el-icon>
           刷新
         </el-button>
@@ -34,7 +34,7 @@
         <el-radio-button label="ranking">站点排名</el-radio-button>
       </el-radio-group>
 
-      <el-select v-model="selectedSites" multiple placeholder="选择站点" style="width: 400px">
+      <el-select v-model="selectedSites" multiple placeholder="选择站点（留空查看全部）" style="width: 400px" @change="loadAll">
         <el-option
           v-for="site in sites"
           :key="site.id"
@@ -78,6 +78,7 @@
               </div>
             </template>
             <div class="funnel-chart">
+              <el-empty v-if="!funnelData.length" description="暂无漏斗数据" :image-size="80" />
               <div
                 v-for="(stage, index) in funnelData"
                 :key="index"
@@ -104,18 +105,14 @@
             <template #header>
               <div class="card-header">
                 <span>销售趋势</span>
-                <el-radio-group v-model="trendView" size="small">
+                <el-radio-group v-model="trendView" size="small" @change="updateTrendChart">
                   <el-radio-button label="sales">销售额</el-radio-button>
                   <el-radio-button label="orders">订单数</el-radio-button>
                   <el-radio-button label="conversion">转化率</el-radio-button>
                 </el-radio-group>
               </div>
             </template>
-            <div class="trend-chart-placeholder">
-              <el-icon :size="64" color="#d1d5db"><DataLine /></el-icon>
-              <p>销售趋势图表</p>
-              <p class="hint">集成Chart.js后显示完整图表</p>
-            </div>
+            <div ref="trendChartRef" class="trend-chart"></div>
           </el-card>
         </el-col>
       </el-row>
@@ -127,7 +124,7 @@
             <template #header>
               <div class="card-header">
                 <span>热销产品 TOP10</span>
-                <el-select v-model="hotProductsSort" size="small" style="width: 120px">
+                <el-select v-model="hotProductsSort" size="small" style="width: 120px" @change="loadTopProducts">
                   <el-option label="按销量" value="sales" />
                   <el-option label="按销售额" value="revenue" />
                   <el-option label="按加购数" value="cart" />
@@ -135,6 +132,7 @@
               </div>
             </template>
             <div class="product-list">
+              <el-empty v-if="!hotProducts.length" description="暂无热销产品" :image-size="60" />
               <div
                 v-for="(product, index) in hotProducts"
                 :key="product.id"
@@ -153,7 +151,7 @@
                 <div class="product-bar">
                   <div
                     class="bar-fill"
-                    :style="{ width: (product.sales / hotProducts[0].sales * 100) + '%' }"
+                    :style="{ width: (hotProducts[0]?.sales ? product.sales / hotProducts[0].sales * 100 : 0) + '%' }"
                   ></div>
                 </div>
               </div>
@@ -166,7 +164,7 @@
             <template #header>
               <div class="card-header">
                 <span>弃购产品 TOP10</span>
-                <el-select v-model="abandonedSort" size="small" style="width: 120px">
+                <el-select v-model="abandonedSort" size="small" style="width: 120px" @change="loadTopProducts">
                   <el-option label="按弃购率" value="rate" />
                   <el-option label="按弃购数" value="count" />
                   <el-option label="按金额" value="amount" />
@@ -174,6 +172,7 @@
               </div>
             </template>
             <div class="product-list">
+              <el-empty v-if="!abandonedProducts.length" description="暂无弃购产品" :image-size="60" />
               <div
                 v-for="(product, index) in abandonedProducts"
                 :key="product.id"
@@ -192,7 +191,7 @@
                 <div class="product-bar abandon">
                   <div
                     class="bar-fill"
-                    :style="{ width: (product.abandonRate / 100 * 100) + '%' }"
+                    :style="{ width: product.abandonRate + '%' }"
                   ></div>
                 </div>
               </div>
@@ -210,6 +209,7 @@
           </div>
         </template>
         <div class="insights-list">
+          <el-empty v-if="!insights.length" description="暂无洞察数据" :image-size="60" />
           <div
             v-for="(insight, index) in insights"
             :key="index"
@@ -217,14 +217,14 @@
             :class="insight.type"
           >
             <div class="insight-icon">
-              <el-icon><component :is="insight.icon" /></el-icon>
+              <span class="insight-emoji">{{ insight.icon || '💡' }}</span>
             </div>
             <div class="insight-content">
               <div class="insight-title">{{ insight.title }}</div>
               <div class="insight-desc">{{ insight.description }}</div>
               <div class="insight-data">
-                <span>数据依据: {{ insight.data }}</span>
-                <span class="priority">优先级: {{ insight.priority }}</span>
+                <span v-if="insight.data">数据依据: {{ insight.data }}</span>
+                <span class="priority" v-if="insight.priority">优先级: {{ insight.priority }}</span>
               </div>
             </div>
             <el-button size="small" type="primary">立即优化</el-button>
@@ -240,14 +240,18 @@
           <span>站点对比分析</span>
         </template>
         <div class="compare-table-wrapper">
-          <el-table :data="compareData" style="width: 100%">
+          <el-table :data="compareData" style="width: 100%" v-loading="loading">
             <el-table-column prop="siteName" label="站点" width="200" fixed />
             <el-table-column prop="visitors" label="访客数" sortable />
             <el-table-column prop="productViews" label="浏览产品" sortable />
             <el-table-column prop="cartAdds" label="加购数" sortable />
             <el-table-column prop="checkouts" label="结账数" sortable />
             <el-table-column prop="orders" label="订单数" sortable />
-            <el-table-column prop="revenue" label="销售额" sortable />
+            <el-table-column prop="revenue" label="销售额" sortable>
+              <template #default="{ row }">
+                ¥{{ row.revenue }}
+              </template>
+            </el-table-column>
             <el-table-column prop="conversionRate" label="转化率" sortable>
               <template #default="{ row }">
                 <span :class="row.conversionRate > 3 ? 'high-rate' : 'low-rate'">
@@ -255,12 +259,19 @@
                 </span>
               </template>
             </el-table-column>
-            <el-table-column prop="avgOrderValue" label="客单价" sortable />
+            <el-table-column prop="avgOrderValue" label="客单价" sortable>
+              <template #default="{ row }">
+                ¥{{ row.avgOrderValue }}
+              </template>
+            </el-table-column>
             <el-table-column label="操作" width="120" fixed="right">
               <template #default="{ row }">
                 <el-button size="small" @click="viewSiteDetail(row)">详情</el-button>
               </template>
             </el-table-column>
+            <template #empty>
+              <el-empty description="暂无对比数据" />
+            </template>
           </el-table>
         </div>
       </el-card>
@@ -275,19 +286,16 @@
               <span>销售额排名</span>
             </template>
             <div class="ranking-list">
+              <el-empty v-if="!revenueRanking.length" description="暂无数据" :image-size="60" />
               <div
                 v-for="(site, index) in revenueRanking"
-                :key="site.id"
+                :key="site.siteId"
                 class="ranking-item"
               >
                 <div class="rank-number" :class="'rank-' + (index + 1)">{{ index + 1 }}</div>
                 <div class="rank-info">
-                  <div class="rank-name">{{ site.name }}</div>
+                  <div class="rank-name">{{ site.siteName }}</div>
                   <div class="rank-value">¥{{ site.revenue }}</div>
-                </div>
-                <div class="rank-trend" :class="site.trend">
-                  <el-icon><component :is="site.trend === 'up' ? 'Top' : 'Bottom'" /></el-icon>
-                  {{ site.change }}
                 </div>
               </div>
             </div>
@@ -300,19 +308,16 @@
               <span>转化率排名</span>
             </template>
             <div class="ranking-list">
+              <el-empty v-if="!conversionRanking.length" description="暂无数据" :image-size="60" />
               <div
                 v-for="(site, index) in conversionRanking"
-                :key="site.id"
+                :key="site.siteId"
                 class="ranking-item"
               >
                 <div class="rank-number" :class="'rank-' + (index + 1)">{{ index + 1 }}</div>
                 <div class="rank-info">
-                  <div class="rank-name">{{ site.name }}</div>
+                  <div class="rank-name">{{ site.siteName }}</div>
                   <div class="rank-value">{{ site.conversionRate }}%</div>
-                </div>
-                <div class="rank-trend" :class="site.trend">
-                  <el-icon><component :is="site.trend === 'up' ? 'Top' : 'Bottom'" /></el-icon>
-                  {{ site.change }}
                 </div>
               </div>
             </div>
@@ -325,19 +330,16 @@
               <span>访客数排名</span>
             </template>
             <div class="ranking-list">
+              <el-empty v-if="!visitorRanking.length" description="暂无数据" :image-size="60" />
               <div
                 v-for="(site, index) in visitorRanking"
-                :key="site.id"
+                :key="site.siteId"
                 class="ranking-item"
               >
                 <div class="rank-number" :class="'rank-' + (index + 1)">{{ index + 1 }}</div>
                 <div class="rank-info">
-                  <div class="rank-name">{{ site.name }}</div>
+                  <div class="rank-name">{{ site.siteName }}</div>
                   <div class="rank-value">{{ site.visitors }}</div>
-                </div>
-                <div class="rank-trend" :class="site.trend">
-                  <el-icon><component :is="site.trend === 'up' ? 'Top' : 'Bottom'" /></el-icon>
-                  {{ site.change }}
                 </div>
               </div>
             </div>
@@ -348,158 +350,275 @@
   </div>
 </template>
 
-<script setup>
-import { ref, reactive } from 'vue'
+<script setup lang="ts">
+import { ref, reactive, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import * as echarts from 'echarts'
 import { ElMessage } from 'element-plus'
 import {
   Refresh,
   Download,
-  DataLine,
   Goods,
   MagicStick,
-  Warning,
-  Opportunity,
   Top,
   Bottom,
   User,
   ShoppingCart,
   Money,
   TrendCharts,
-  Check
 } from '@element-plus/icons-vue'
+import {
+  getFunnelOverview,
+  getFunnelSalesTrend,
+  getFunnelTopProducts,
+  getFunnelInsights,
+  getFunnelComparison,
+} from '@/api/funnel'
 
+const loading = ref(false)
 const timeRange = ref('30days')
 const viewMode = ref('overview')
-const selectedSites = ref([])
+const selectedSites = ref<number[]>([])
 const funnelView = ref('percent')
-const trendView = ref('sales')
+const trendView = ref<'sales' | 'orders' | 'conversion'>('sales')
 const hotProductsSort = ref('sales')
 const abandonedSort = ref('rate')
 
-const sites = ref([
-  { id: 1, name: 'BangVape HU' },
-  { id: 2, name: 'BangVape RO' },
-  { id: 3, name: 'BangVape AT' },
-  { id: 4, name: 'US Vape Shop' },
-  { id: 5, name: 'Vape Pro DE' }
-])
+const sites = ref<Array<{ id: number; name: string }>>([])
+const trendData = ref<Array<{ date: string; revenue: number; orders: number; visitors: number }>>([])
 
+// KPI 配置（图标固定，数值来自接口）
 const kpiData = ref([
-  { key: 'visitors', label: '总访客数', value: '128,456', change: '12.5%', trend: 'up', icon: 'User', color: 'blue' },
-  { key: 'orders', label: '总订单数', value: '3,248', change: '8.3%', trend: 'up', icon: 'ShoppingCart', color: 'green' },
-  { key: 'revenue', label: '总销售额', value: '¥289,560', change: '15.2%', trend: 'up', icon: 'Money', color: 'purple' },
-  { key: 'conversion', label: '整体转化率', value: '2.53%', change: '0.3%', trend: 'up', icon: 'TrendCharts', color: 'orange' },
-  { key: 'aov', label: '客单价', value: '¥89.2', change: '6.8%', trend: 'up', icon: 'Goods', color: 'cyan' }
+  { key: 'visitors', label: '总访客数', value: '0', change: '-', trend: 'up', icon: User, color: 'blue' },
+  { key: 'orders', label: '总订单数', value: '0', change: '-', trend: 'up', icon: ShoppingCart, color: 'green' },
+  { key: 'revenue', label: '总销售额', value: '¥0', change: '-', trend: 'up', icon: Money, color: 'purple' },
+  { key: 'conversion', label: '整体转化率', value: '0%', change: '-', trend: 'up', icon: TrendCharts, color: 'orange' },
+  { key: 'aov', label: '客单价', value: '¥0', change: '-', trend: 'up', icon: Goods, color: 'cyan' },
 ])
 
-const funnelData = ref([
-  { name: '访客数', value: '128,456', percent: 100, conversionRate: '100' },
-  { name: '浏览产品', value: '89,234', percent: 69.5, conversionRate: '69.5' },
-  { name: '加入购物车', value: '28,456', percent: 22.2, conversionRate: '31.9' },
-  { name: '开始结账', value: '15,678', percent: 12.2, conversionRate: '55.1' },
-  { name: '完成购买', value: '3,248', percent: 2.5, conversionRate: '20.7' }
-])
+const funnelData = ref<Array<{ name: string; value: string | number; percent: number; conversionRate: string | number }>>([])
+const hotProducts = ref<Array<any>>([])
+const abandonedProducts = ref<Array<any>>([])
+const insights = ref<Array<any>>([])
+const compareData = ref<Array<any>>([])
 
-const hotProducts = ref([
-  { id: 1, name: 'Bang XXL 2000 Puffs', sales: 1256, revenue: '28,960' },
-  { id: 2, name: 'Bang Pro 3000 Puffs', sales: 987, revenue: '24,675' },
-  { id: 3, name: 'Bang Max 5000 Puffs', sales: 845, revenue: '29,575' },
-  { id: 4, name: 'Bang Mini 800 Puffs', sales: 723, revenue: '10,845' },
-  { id: 5, name: 'Bang Ultra 7000 Puffs', sales: 612, revenue: '27,540' },
-  { id: 6, name: 'Bang Nano 600 Puffs', sales: 534, revenue: '6,942' },
-  { id: 7, name: 'Bang Plus 1500 Puffs', sales: 478, revenue: '11,950' },
-  { id: 8, name: 'Bang King 10000 Puffs', sales: 412, revenue: '28,840' }
-])
+const revenueRanking = ref<Array<any>>([])
+const conversionRanking = ref<Array<any>>([])
+const visitorRanking = ref<Array<any>>([])
 
-const abandonedProducts = ref([
-  { id: 1, name: 'Bang King 10000 Puffs', abandonRate: 68.5, amount: '15,680' },
-  { id: 2, name: 'Bang Ultra 7000 Puffs', abandonRate: 62.3, amount: '12,450' },
-  { id: 3, name: 'Bang Max 5000 Puffs', abandonRate: 58.7, amount: '10,230' },
-  { id: 4, name: 'Bang Pro 3000 Puffs', abandonRate: 54.2, amount: '8,960' },
-  { id: 5, name: 'Bang XXL 2000 Puffs', abandonRate: 49.8, amount: '7,840' },
-  { id: 6, name: 'Bang Plus 1500 Puffs', abandonRate: 45.6, amount: '5,670' },
-  { id: 7, name: 'Bang Mini 800 Puffs', abandonRate: 41.3, amount: '3,450' },
-  { id: 8, name: 'Bang Nano 600 Puffs', abandonRate: 38.9, amount: '2,180' }
-])
+const trendChartRef = ref<HTMLElement>()
+let trendChart: echarts.ECharts | null = null
 
-const insights = ref([
-  {
-    type: 'warning',
-    icon: 'Warning',
-    title: '结账页面弃购率偏高',
-    description: '结账页面的弃购率达到 79.3%，高于行业平均水平。建议优化结账流程，减少填写字段，添加信任徽章。',
-    data: '结账弃购率 79.3%，行业平均 65%',
-    priority: '高'
-  },
-  {
-    type: 'opportunity',
-    icon: 'Opportunity',
-    title: '移动端转化率有提升空间',
-    description: '移动端访客占比 65%，但转化率仅为 1.8%，低于桌面端的 3.2%。建议优化移动端购物体验。',
-    data: '移动端转化率 1.8%，桌面端 3.2%',
-    priority: '中'
-  },
-  {
-    type: 'success',
-    icon: 'Check',
-    title: '本周销售额增长显著',
-    description: '本周销售额环比增长 15.2%，主要得益于新品上市和促销活动。建议保持当前营销策略。',
-    data: '销售额增长 15.2%，订单增长 8.3%',
-    priority: '低'
-  },
-  {
-    type: 'optimization',
-    icon: 'TrendCharts',
-    title: '高客单价产品加购率低',
-    description: 'Bang King 10000 Puffs 虽然单价高，但加购率偏低。建议添加产品对比、增加用户评价、提供分期付款选项。',
-    data: '加购率 12.5%，平均 22.2%',
-    priority: '中'
+// 格式化数字
+const formatNumber = (n: number): string => {
+  if (!n) return '0'
+  return n.toLocaleString('zh-CN')
+}
+
+// 选中的站点ID字符串
+const siteIdsParam = (): string => {
+  return selectedSites.value.length ? selectedSites.value.join(',') : ''
+}
+
+// 加载概览数据
+const loadOverview = async () => {
+  try {
+    const res: any = await getFunnelOverview({ time_range: timeRange.value, site_ids: siteIdsParam() })
+    const data = res.data || res
+    sites.value = data.sites || []
+    const metrics = data.metrics || {}
+
+    // 更新 KPI
+    kpiData.value[0].value = formatNumber(metrics.visitors || 0)
+    kpiData.value[1].value = formatNumber(metrics.orders || metrics.purchases || 0)
+    kpiData.value[2].value = '¥' + formatNumber(Math.round(metrics.revenue || 0))
+    kpiData.value[3].value = (metrics.conversion_rate || 0) + '%'
+    kpiData.value[4].value = '¥' + (metrics.avg_order_value || 0)
+
+    // 构建漏斗层级
+    const stages = data.stages || []
+    const maxVal = stages.length ? Math.max(...stages.map((s: any) => s.value || 0), 1) : 1
+    funnelData.value = stages.map((s: any) => ({
+      name: s.name,
+      value: formatNumber(s.value || 0),
+      percent: maxVal ? Math.round((s.value / maxVal) * 100) : 0,
+      conversionRate: s.conversion_from_prev ?? 0,
+    }))
+  } catch (error) {
+    console.warn('加载漏斗概览失败', error)
   }
-])
+}
 
-const compareData = ref([
-  { siteName: 'BangVape HU', visitors: 45678, productViews: 32456, cartAdds: 12345, checkouts: 5678, orders: 1234, revenue: '¥98,760', conversionRate: 2.7, avgOrderValue: '¥80.0' },
-  { siteName: 'BangVape RO', visitors: 34567, productViews: 23456, cartAdds: 8765, checkouts: 4321, orders: 876, revenue: '¥65,430', conversionRate: 2.53, avgOrderValue: '¥74.7' },
-  { siteName: 'BangVape AT', visitors: 23456, productViews: 18765, cartAdds: 6543, checkouts: 3210, orders: 654, revenue: '¥54,320', conversionRate: 2.79, avgOrderValue: '¥83.1' },
-  { siteName: 'US Vape Shop', visitors: 18765, productViews: 12345, cartAdds: 4567, checkouts: 2345, orders: 345, revenue: '¥45,670', conversionRate: 1.84, avgOrderValue: '¥132.4' },
-  { siteName: 'Vape Pro DE', visitors: 5990, productViews: 2212, cartAdds: 1236, checkouts: 524, orders: 139, revenue: '¥25,380', conversionRate: 2.32, avgOrderValue: '¥182.6' }
-])
+// 加载销售趋势
+const loadSalesTrend = async () => {
+  try {
+    const res: any = await getFunnelSalesTrend({ time_range: timeRange.value, site_ids: siteIdsParam() })
+    trendData.value = (res.data || res) || []
+  } catch (error) {
+    console.warn('加载销售趋势失败', error)
+    trendData.value = []
+  }
+  await nextTick()
+  updateTrendChart()
+}
 
-const revenueRanking = ref([
-  { id: 1, name: 'BangVape HU', revenue: '98,760', change: '15.2%', trend: 'up' },
-  { id: 2, name: 'BangVape RO', revenue: '65,430', change: '8.3%', trend: 'up' },
-  { id: 3, name: 'BangVape AT', revenue: '54,320', change: '12.1%', trend: 'up' },
-  { id: 4, name: 'US Vape Shop', revenue: '45,670', change: '5.6%', trend: 'up' },
-  { id: 5, name: 'Vape Pro DE', revenue: '25,380', change: '2.1%', trend: 'down' }
-])
+// 更新趋势图
+const updateTrendChart = () => {
+  if (!trendChartRef.value) return
+  if (!trendChart) {
+    trendChart = echarts.init(trendChartRef.value)
+  }
 
-const conversionRanking = ref([
-  { id: 1, name: 'BangVape AT', conversionRate: '2.79', change: '0.4%', trend: 'up' },
-  { id: 2, name: 'BangVape HU', conversionRate: '2.70', change: '0.3%', trend: 'up' },
-  { id: 3, name: 'BangVape RO', conversionRate: '2.53', change: '0.1%', trend: 'up' },
-  { id: 4, name: 'Vape Pro DE', conversionRate: '2.32', change: '0.2%', trend: 'down' },
-  { id: 5, name: 'US Vape Shop', conversionRate: '1.84', change: '0.5%', trend: 'up' }
-])
+  const dates = trendData.value.map((d) => d.date)
+  let seriesData: number[] = []
+  let seriesName = '销售额'
 
-const visitorRanking = ref([
-  { id: 1, name: 'BangVape HU', visitors: '45,678', change: '18.5%', trend: 'up' },
-  { id: 2, name: 'BangVape RO', visitors: '34,567', change: '12.3%', trend: 'up' },
-  { id: 3, name: 'BangVape AT', visitors: '23,456', change: '9.7%', trend: 'up' },
-  { id: 4, name: 'US Vape Shop', visitors: '18,765', change: '6.2%', trend: 'up' },
-  { id: 5, name: 'Vape Pro DE', visitors: '5,990', change: '3.1%', trend: 'down' }
-])
+  if (trendView.value === 'sales') {
+    seriesData = trendData.value.map((d) => Number(d.revenue || 0))
+    seriesName = '销售额'
+  } else if (trendView.value === 'orders') {
+    seriesData = trendData.value.map((d) => Number(d.orders || 0))
+    seriesName = '订单数'
+  } else {
+    seriesData = trendData.value.map((d) => {
+      const v = Number(d.visitors || 0)
+      return v ? Number(((d.orders / v) * 100).toFixed(2)) : 0
+    })
+    seriesName = '转化率(%)'
+  }
 
-const refreshData = () => {
-  ElMessage.success('数据已刷新')
+  const option: echarts.EChartsOption = {
+    tooltip: { trigger: 'axis' },
+    grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+    xAxis: { type: 'category', boundaryGap: false, data: dates },
+    yAxis: { type: 'value' },
+    series: [
+      {
+        name: seriesName,
+        type: 'line',
+        smooth: true,
+        data: seriesData,
+        areaStyle: {
+          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: 'rgba(59, 130, 246, 0.5)' },
+            { offset: 1, color: 'rgba(59, 130, 246, 0.05)' },
+          ]),
+        },
+        lineStyle: { color: '#3b82f6', width: 2 },
+        itemStyle: { color: '#3b82f6' },
+      },
+    ],
+  }
+  trendChart.setOption(option, true)
+}
+
+// 加载热销/弃购产品
+const loadTopProducts = async () => {
+  try {
+    const orderBy = hotProductsSort.value === 'cart' ? 'add_to_cart' : hotProductsSort.value
+    const res: any = await getFunnelTopProducts({
+      time_range: timeRange.value,
+      order_by: orderBy,
+      limit: 20,
+      site_ids: siteIdsParam(),
+    })
+    const products = (res.data || res) || []
+
+    // 热销产品：按当前排序
+    const hotSorted = [...products].sort((a, b) => {
+      const key = hotProductsSort.value === 'sales' ? 'sales' : hotProductsSort.value === 'revenue' ? 'revenue' : 'add_to_cart'
+      return (b[key] || 0) - (a[key] || 0)
+    })
+    hotProducts.value = hotSorted.slice(0, 10)
+
+    // 弃购产品：按弃购率/弃购数/金额
+    const abanSorted = [...products].sort((a, b) => {
+      if (abandonedSort.value === 'rate') return (b.abandonRate || 0) - (a.abandonRate || 0)
+      if (abandonedSort.value === 'amount') return (b.amount || 0) - (a.amount || 0)
+      // count = add_to_cart - sales
+      return ((b.add_to_cart || 0) - (b.sales || 0)) - ((a.add_to_cart || 0) - (a.sales || 0))
+    })
+    abandonedProducts.value = abanSorted.slice(0, 10)
+  } catch (error) {
+    console.warn('加载热销产品失败', error)
+    hotProducts.value = []
+    abandonedProducts.value = []
+  }
+}
+
+// 加载 AI 洞察
+const loadInsights = async () => {
+  try {
+    const res: any = await getFunnelInsights({ time_range: timeRange.value, site_ids: siteIdsParam() })
+    const data = res.data || res
+    insights.value = data.insights || []
+  } catch (error) {
+    console.warn('加载洞察失败', error)
+    insights.value = []
+  }
+}
+
+// 加载对比数据
+const loadComparison = async () => {
+  try {
+    const res: any = await getFunnelComparison({ time_range: timeRange.value, site_ids: siteIdsParam() })
+    compareData.value = (res.data || res) || []
+    // 构建排名
+    revenueRanking.value = [...compareData.value].sort((a, b) => (b.revenue || 0) - (a.revenue || 0))
+    conversionRanking.value = [...compareData.value].sort((a, b) => (b.conversionRate || 0) - (a.conversionRate || 0))
+    visitorRanking.value = [...compareData.value].sort((a, b) => (b.visitors || 0) - (a.visitors || 0))
+  } catch (error) {
+    console.warn('加载对比数据失败', error)
+    compareData.value = []
+  }
+}
+
+// 加载全部数据
+const loadAll = async () => {
+  loading.value = true
+  try {
+    await Promise.allSettled([
+      loadOverview(),
+      loadSalesTrend(),
+      loadTopProducts(),
+      loadInsights(),
+      loadComparison(),
+    ])
+  } finally {
+    loading.value = false
+  }
 }
 
 const exportReport = () => {
-  ElMessage.info('正在生成报告...')
+  ElMessage.info('正在生成报告，请稍候...')
 }
 
-const viewSiteDetail = (row) => {
+const viewSiteDetail = (row: any) => {
   ElMessage.info(`正在查看 ${row.siteName} 详细数据...`)
 }
+
+const handleResize = () => {
+  trendChart?.resize()
+}
+
+// 切换视图模式时加载对比数据
+watch(viewMode, (val) => {
+  if (val === 'compare' || val === 'ranking') {
+    if (!compareData.value.length) loadComparison()
+  }
+})
+
+onMounted(async () => {
+  await loadAll()
+  await nextTick()
+  updateTrendChart()
+  window.addEventListener('resize', handleResize)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', handleResize)
+  trendChart?.dispose()
+  trendChart = null
+})
 </script>
 
 <style scoped>
@@ -681,23 +800,9 @@ const viewSiteDetail = (row) => {
   color: #6b7280;
 }
 
-.trend-chart-placeholder {
+.trend-chart {
+  width: 100%;
   height: 300px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  color: #9ca3af;
-}
-
-.trend-chart-placeholder p {
-  margin: 8px 0 4px;
-  font-size: 14px;
-}
-
-.trend-chart-placeholder .hint {
-  font-size: 12px;
-  color: #d1d5db;
 }
 
 .product-list {
@@ -846,6 +951,11 @@ const viewSiteDetail = (row) => {
   border-left: 4px solid #8b5cf6;
 }
 
+.insight-item.critical {
+  background: #fee2e220;
+  border-left: 4px solid #ef4444;
+}
+
 .insight-icon {
   width: 40px;
   height: 40px;
@@ -855,26 +965,12 @@ const viewSiteDetail = (row) => {
   justify-content: center;
   flex-shrink: 0;
   font-size: 20px;
+  background: #f3f4f6;
 }
 
-.insight-item.warning .insight-icon {
-  background: #fef3c7;
-  color: #f59e0b;
-}
-
-.insight-item.opportunity .insight-icon {
-  background: #dbeafe;
-  color: #3b82f6;
-}
-
-.insight-item.success .insight-icon {
-  background: #d1fae5;
-  color: #10b981;
-}
-
-.insight-item.optimization .insight-icon {
-  background: #ede9fe;
-  color: #8b5cf6;
+.insight-emoji {
+  font-size: 20px;
+  line-height: 1;
 }
 
 .insight-content {
@@ -987,20 +1083,5 @@ const viewSiteDetail = (row) => {
 .rank-value {
   font-size: 12px;
   color: #6b7280;
-}
-
-.rank-trend {
-  font-size: 12px;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
-.rank-trend.up {
-  color: #10b981;
-}
-
-.rank-trend.down {
-  color: #ef4444;
 }
 </style>

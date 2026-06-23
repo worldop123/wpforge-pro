@@ -15,6 +15,7 @@ from bs4 import BeautifulSoup
 from decimal import Decimal
 
 from app.core.config import settings
+from app.core.logging import get_logger
 from app.services.proxy.stealth_service import StealthService
 from app.services.proxy.proxy_pool import ProxyManager
 from app.services.scraper.scraper_config import (
@@ -27,6 +28,8 @@ from app.services.scraper.scraper_config import (
 )
 from app.utils.string_utils import clean_text, extract_numbers
 from app.utils.file_utils import ensure_directory
+
+logger = get_logger(__name__)
 
 
 class EnhancedScraper:
@@ -605,8 +608,9 @@ class EnhancedScraper:
                     });
                 }"""
             )
-        except:
-            pass
+        except Exception as e:
+            # 滚动模拟失败不影响主流程，仅记录警告
+            logger.warning("模拟滚动行为失败: %s", e)
 
     async def _simulate_hover(self):
         """模拟悬停行为"""
@@ -622,10 +626,12 @@ class EnhancedScraper:
                     try:
                         await element.hover()
                         await asyncio.sleep(random.uniform(0.3, 1.0))
-                    except:
-                        pass
-        except:
-            pass
+                    except Exception as e:
+                        # 单个元素悬停失败时记录调试日志，继续尝试其他元素
+                        logger.debug("元素悬停失败: %s", e)
+        except Exception as e:
+            # 悬停整体失败不影响主流程，仅记录警告
+            logger.warning("模拟悬停行为失败: %s", e)
 
     async def _random_delay(self, min_delay: float = None, max_delay: float = None):
         """随机延迟"""
@@ -652,18 +658,95 @@ class EnhancedScraper:
         last_run = incremental_config.last_run_time
         incremental_config.last_run_time = time.time()
 
+        # 在执行采集前，先快照已采集产品的唯一键，用于后续判断新增/更新
+        check_field = incremental_config.check_field or "url"
+        existing_keys = {
+            self._get_check_value(p, check_field)
+            for p in self.collected_products
+        }
+
         # 执行完整采集
         task = await self.scrape_site(task)
 
-        # 过滤新增/更新的产品
+        # 根据增量模式过滤新增/更新的产品
         if incremental_config.mode == "new_only":
-            # 只保留新产品（这里简化处理，实际需要对比数据库）
-            pass
+            # 只保留新产品：过滤掉 check_field 已存在于历史快照中的产品
+            new_products: List[Dict[str, Any]] = []
+            for product in task.collected_data:
+                key = self._get_check_value(product, check_field)
+                if key in existing_keys:
+                    # 已存在，跳过
+                    continue
+                product.setdefault("_incremental", {})["is_new"] = True
+                new_products.append(product)
+            task.collected_data = new_products
+            logger.info(
+                "增量采集(new_only)：本次共采集 %d 个，新产品 %d 个",
+                task.processed_items, len(new_products),
+            )
         elif incremental_config.mode == "update_existing":
-            # 更新已存在的产品
-            pass
+            # 更新已存在的产品：标记每个产品是新增还是更新，并按需跳过未变化项
+            updated_products: List[Dict[str, Any]] = []
+            for product in task.collected_data:
+                key = self._get_check_value(product, check_field)
+                incremental_meta = product.setdefault("_incremental", {})
+                if key in existing_keys:
+                    incremental_meta["is_update"] = True
+                    # skip_unchanged 为 True 时，跳过内容未变化的产品
+                    if incremental_config.skip_unchanged and self._is_product_unchanged(
+                        product, check_field, key
+                    ):
+                        incremental_meta["skipped_unchanged"] = True
+                        continue
+                else:
+                    incremental_meta["is_new"] = True
+                updated_products.append(product)
+            task.collected_data = updated_products
+            logger.info(
+                "增量采集(update_existing)：本次保留 %d 个产品",
+                len(updated_products),
+            )
 
         return task
+
+    @staticmethod
+    def _get_check_value(product: Dict[str, Any], check_field: str) -> str:
+        """从产品字典中提取用于判断唯一性的字段值"""
+        if not isinstance(product, dict):
+            return ""
+        value = product.get(check_field, "")
+        return str(value) if value is not None else ""
+
+    def _is_product_unchanged(
+        self, product: Dict[str, Any], check_field: str, key: str
+    ) -> bool:
+        """
+        判断产品相对历史记录是否未发生变化
+        通过对比同 check_field 值的历史产品内容哈希实现
+        """
+        current_hash = self._compute_product_hash(product)
+        for historical in self.collected_products:
+            if self._get_check_value(historical, check_field) != key:
+                continue
+            historical_hash = self._compute_product_hash(historical)
+            return current_hash == historical_hash
+        # 未找到历史记录视为已变化
+        return False
+
+    @staticmethod
+    def _compute_product_hash(product: Dict[str, Any]) -> str:
+        """计算产品内容的哈希值，用于增量对比"""
+        import hashlib
+        # 排除增量元数据字段，避免元数据影响哈希
+        clone = {
+            k: v for k, v in product.items()
+            if k != "_incremental"
+        }
+        try:
+            raw = json.dumps(clone, sort_keys=True, ensure_ascii=False, default=str)
+        except Exception:
+            raw = str(clone)
+        return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
     async def close(self):
         """关闭浏览器"""

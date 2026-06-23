@@ -168,22 +168,59 @@ async def quick_scrape(
     current_user: User = Depends(get_current_user),
 ):
     """快速采集单个产品（同步）"""
+    from dataclasses import asdict
+    from app.services.scraper_service import create_woocommerce_scraper
+
+    # 创建采集器：默认按 WooCommerce 站点结构采集单个产品页
+    # 关闭代理/变体/图片下载以加快单页采集速度
+    scraper = create_woocommerce_scraper(
+        start_url=url,
+        use_proxy=False,
+        use_stealth=False,
+        download_images=False,
+        scrape_variations=False,
+        incremental=False,
+        max_pages=1,
+        max_products=1,
+    )
+
+    product = None
     try:
-        # 这里可以实现快速采集逻辑
-        # 由于需要Playwright，实际部署时使用
-        return SuccessResponse(
-            message="快速采集功能",
-            data={
-                "url": url,
-                "status": "demo",
-                "message": "完整采集功能请使用异步任务"
-            }
-        )
+        # 初始化浏览器 -> 采集单个产品页 -> 关闭浏览器
+        await scraper._init_browser()
+        try:
+            product = await scraper.scrape_product_page(url)
+        finally:
+            await scraper._close_browser()
     except Exception as e:
+        # 浏览器初始化或关闭失败时直接抛出
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"采集失败: {str(e)}"
         )
+
+    if product is None:
+        return SuccessResponse(
+            message="快速采集完成，但未提取到产品数据",
+            data={
+                "url": url,
+                "status": "no_data",
+                "message": "目标页面可能不是产品页或选择器未匹配",
+            }
+        )
+
+    # 序列化产品数据，剔除体积过大的原始 HTML 字段
+    product_data = asdict(product)
+    product_data.pop("raw_html", None)
+
+    return SuccessResponse(
+        message="快速采集成功",
+        data={
+            "url": url,
+            "status": "success",
+            "product": product_data,
+        }
+    )
 
 
 async def _run_scraping_task(task_id: int, params: dict):

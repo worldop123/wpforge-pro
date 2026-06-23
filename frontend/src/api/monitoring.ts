@@ -5,6 +5,11 @@ export function getMonitoringOverview() {
   return api.get('/monitoring/overview')
 }
 
+// 获取采集趋势图表数据
+export function getChartData(period: 'week' | 'month' | 'year' = 'week') {
+  return api.get('/monitoring/chart-data', { params: { period } })
+}
+
 // 获取站点监控状态
 export function getSiteMonitoringStatus(site_id: number) {
   return api.get(`/monitoring/sites/${site_id}/status`)

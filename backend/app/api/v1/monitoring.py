@@ -2,15 +2,101 @@
 监控API - 站点监控与告警
 """
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from datetime import datetime, timedelta
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
+from sqlalchemy import func, extract
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
 from app.models.site import Site
+from app.models.task import Task
 from app.schemas import SuccessResponse
 
 router = APIRouter(prefix="/monitoring", tags=["监控告警"])
+
+
+@router.get("/chart-data", response_model=SuccessResponse)
+async def get_chart_data(
+    period: str = Query("week", description="时间范围: week/month/year"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """获取采集趋势图表数据（基于真实任务统计）"""
+    now = datetime.now()
+
+    if period == "week":
+        # 本周：按天聚合最近7天
+        start_date = now - timedelta(days=6)
+        date_labels = [(start_date + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+        weekday_labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+        # 调整使今天对应最后一个标签
+        today_weekday = now.weekday()
+        weekday_labels = weekday_labels[today_weekday + 1:] + weekday_labels[:today_weekday + 1]
+        labels = weekday_labels
+    elif period == "month":
+        # 本月：按天聚合最近30天
+        start_date = now - timedelta(days=29)
+        date_labels = [(start_date + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(30)]
+        labels = [f"{i + 1}日" for i in range(30)]
+    else:
+        # 本年：按月聚合最近12个月
+        start_date = now - timedelta(days=365)
+        labels = [f"{i + 1}月" for i in range(12)]
+        date_labels = []
+        for i in range(12):
+            month_date = now.replace(day=1) - timedelta(days=30 * (11 - i))
+            date_labels.append(month_date.strftime("%Y-%m"))
+
+    # 按任务类型聚合已处理项目数
+    def aggregate_by_type(task_type: str):
+        series = []
+        if period == "year":
+            # 按月聚合
+            for month_start_str in date_labels:
+                year, month = map(int, month_start_str.split("-"))
+                month_start = datetime(year, month, 1)
+                if month == 12:
+                    month_end = datetime(year + 1, 1, 1)
+                else:
+                    month_end = datetime(year, month + 1, 1)
+                total = db.query(func.coalesce(func.sum(Task.processed_items), 0)).filter(
+                    Task.user_id == current_user.id,
+                    Task.task_type == task_type,
+                    Task.created_at >= month_start,
+                    Task.created_at < month_end,
+                ).scalar() or 0
+                series.append(int(total))
+        else:
+            # 按天聚合
+            for date_str in date_labels:
+                day_start = datetime.strptime(date_str, "%Y-%m-%d")
+                day_end = day_start + timedelta(days=1)
+                total = db.query(func.coalesce(func.sum(Task.processed_items), 0)).filter(
+                    Task.user_id == current_user.id,
+                    Task.task_type == task_type,
+                    Task.created_at >= day_start,
+                    Task.created_at < day_end,
+                ).scalar() or 0
+                series.append(int(total))
+        return series
+
+    # 采集产品（scrape 类型）、翻译文本（translate 类型）、导入产品（import 类型）
+    scrape_series = aggregate_by_type("scrape")
+    translate_series = aggregate_by_type("translate")
+    import_series = aggregate_by_type("import")
+
+    return SuccessResponse(
+        message="获取成功",
+        data={
+            "xAxis": labels,
+            "series": [
+                {"name": "采集产品", "data": scrape_series},
+                {"name": "翻译文本", "data": translate_series},
+                {"name": "导入产品", "data": import_series},
+            ],
+        }
+    )
 
 
 @router.get("/overview", response_model=SuccessResponse)

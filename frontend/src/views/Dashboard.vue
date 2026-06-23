@@ -234,10 +234,11 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, nextTick, computed } from 'vue'
 import * as echarts from 'echarts'
-import { getMonitoringOverview } from '@/api/monitoring'
+import { getMonitoringOverview, getChartData } from '@/api/monitoring'
 import { getTasks, getTaskStats } from '@/api/tasks'
 import { getProducts } from '@/api/products'
 import { getSites } from '@/api/sites'
+import { getSEOOverview } from '@/api/seo'
 
 const chartRef = ref<HTMLElement>()
 let chartInstance: echarts.ECharts | null = null
@@ -371,53 +372,60 @@ const loadTaskStats = async () => {
   }
 }
 
+// 加载真实 SEO 概览数据
+const loadSEOOverview = async () => {
+  try {
+    const res: any = await getSEOOverview()
+    const data = res.data || res
+    if (data) {
+      stats.value.seoScore = data.avgScore || 0
+      stats.value.seoGood = data.goodPages || 0
+      stats.value.seoWarning = data.warningPages || 0
+      stats.value.seoBad = data.badPages || 0
+    }
+  } catch (error) {
+    console.warn('加载SEO概览失败')
+  }
+}
+
 const loadAll = async () => {
   loading.value = true
   try {
-    await Promise.allSettled([loadOverview(), loadSites(), loadProducts(), loadTasks(), loadTaskStats()])
-    // 模拟 SEO 评分（无对应 API）
-    stats.value.seoScore = stats.value.seoScore || 75
-    stats.value.seoGood = stats.value.seoGood || 12
-    stats.value.seoWarning = stats.value.seoWarning || 5
-    stats.value.seoBad = stats.value.seoBad || 2
-    stats.value.todayProducts = stats.value.todayProducts || Math.floor(stats.value.products * 0.05)
-    stats.value.translations = stats.value.translations || 3428
-    stats.value.weekTranslations = stats.value.weekTranslations || 580
+    await Promise.allSettled([
+      loadOverview(),
+      loadSites(),
+      loadProducts(),
+      loadTasks(),
+      loadTaskStats(),
+      loadSEOOverview()
+    ])
   } finally {
     loading.value = false
   }
 }
 
-const getChartData = () => {
-  if (chartPeriod.value === 'week') {
-    return {
-      xAxis: ['周一', '周二', '周三', '周四', '周五', '周六', '周日'],
-      series: [
-        { name: '采集产品', data: [120, 132, 101, 134, 90, 230, 210] },
-        { name: '翻译文本', data: [220, 182, 191, 234, 290, 330, 310] },
-        { name: '导入产品', data: [150, 232, 201, 154, 190, 330, 410] }
-      ]
+// 从真实 API 加载图表数据
+const loadChartData = async () => {
+  try {
+    const res: any = await getChartData(chartPeriod.value)
+    const data = res.data || res
+    if (data && data.xAxis && data.series) {
+      return {
+        xAxis: data.xAxis,
+        series: data.series
+      }
     }
-  } else if (chartPeriod.value === 'month') {
-    const days = Array.from({ length: 30 }, (_, i) => `${i + 1}日`)
-    return {
-      xAxis: days,
-      series: [
-        { name: '采集产品', data: days.map(() => Math.floor(Math.random() * 200) + 50) },
-        { name: '翻译文本', data: days.map(() => Math.floor(Math.random() * 300) + 100) },
-        { name: '导入产品', data: days.map(() => Math.floor(Math.random() * 250) + 80) }
-      ]
-    }
-  } else {
-    const months = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月']
-    return {
-      xAxis: months,
-      series: [
-        { name: '采集产品', data: [820, 932, 901, 934, 1290, 1330, 1320, 1420, 1500, 1620, 1700, 1850] },
-        { name: '翻译文本', data: [1620, 1732, 1701, 1734, 1990, 2030, 2020, 2120, 2200, 2320, 2400, 2550] },
-        { name: '导入产品', data: [620, 732, 701, 734, 890, 930, 920, 1020, 1100, 1220, 1300, 1450] }
-      ]
-    }
+  } catch (error) {
+    console.warn('加载图表数据失败')
+  }
+  // 失败时返回空数据，避免渲染错误
+  return {
+    xAxis: [],
+    series: [
+      { name: '采集产品', data: [] },
+      { name: '翻译文本', data: [] },
+      { name: '导入产品', data: [] }
+    ]
   }
 }
 
@@ -427,9 +435,9 @@ const initChart = () => {
   updateChart()
 }
 
-const updateChart = () => {
+const updateChart = async () => {
   if (!chartInstance) return
-  const chartData = getChartData()
+  const chartData = await loadChartData()
   const option = {
     tooltip: {
       trigger: 'axis'
